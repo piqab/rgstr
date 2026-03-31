@@ -57,8 +57,12 @@ docker run -d \
 ### Docker Compose
 
 ```bash
+cp .env.example .env
+# Отредактируйте .env под свои нужды
 docker compose up -d
 ```
+
+`docker compose` автоматически подхватывает `.env` из текущей директории и передаёт все переменные в контейнер. `RGSTR_STORAGE` всегда переопределяется на `/data` (Docker volume).
 
 ---
 
