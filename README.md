@@ -322,6 +322,7 @@ make release            # Все платформы сразу
 |---|---|---|
 | `GET` | `/v2/` | Проверка версии API |
 | `GET` | `/healthz` | Health check (без аутентификации) |
+| `GET` | `/stats` | Статистика репозиториев и pulls |
 | `GET` | `/v2/auth` | Получение Bearer токена |
 | `GET` | `/v2/_catalog` | Список репозиториев |
 | `GET` | `/v2/<name>/tags/list` | Список тегов |
@@ -339,6 +340,31 @@ make release            # Все платформы сразу
 | `DELETE` | `/v2/<name>/blobs/uploads/<uuid>` | Отмена загрузки |
 
 Параметры `?n=<int>&last=<string>` поддерживаются для пагинации в `/v2/_catalog` и `/v2/<name>/tags/list`.
+
+### GET /stats
+
+Возвращает список репозиториев, их теги и количество pulls.
+
+При `RGSTR_AUTH_ENABLED=true` требует Basic auth (те же пользователи, что и для реестра).
+
+```bash
+curl https://registry.example.com/stats
+# С авторизацией:
+curl -u alice:secret https://registry.example.com/stats
+```
+
+```json
+{
+  "repositories": [
+    {"name": "myrepo/alpine", "tags": ["latest", "3.18"], "pulls": 42},
+    {"name": "myrepo/nginx",  "tags": ["latest"],          "pulls": 7}
+  ],
+  "total_repos": 2,
+  "total_pulls": 49
+}
+```
+
+Счётчики pulls персистируются в `stats.json` в директории хранилища и сохраняются между перезапусками.
 
 ---
 
