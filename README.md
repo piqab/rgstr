@@ -14,6 +14,7 @@
 - **Cross-repo mount** — мгновенное монтирование blob'а из другого репозитория без передачи данных
 - **Garbage collection** — периодическая очистка недостижимых blob'ов и зависших сессий загрузки
 - **Bearer token auth** — JWT (HS256) по Docker auth specification, Basic auth на токен-эндпоинте
+- **Публичные и приватные репозитории** — гибкий контроль доступа через glob-паттерны, анонимный pull без авторизации
 - **Range downloads** — поддержка HTTP `Range` заголовка при скачивании слоёв
 - **Без внешних зависимостей рантайма** — один статический бинарь, нет баз данных, нет сторонних сервисов
 - **Безопасность от гонок** — `sync.RWMutex` + per-digest и per-upload локи
@@ -82,6 +83,7 @@ cp .env.example .env
 | `RGSTR_AUTH_ISSUER` | `rgstr` | Издатель токенов (поле `iss`) |
 | `RGSTR_TOKEN_TTL` | `1h` | Время жизни токена |
 | `RGSTR_USERS` | — | Список пользователей (см. ниже) |
+| `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
 | `RGSTR_GC_INTERVAL` | `1h` | Интервал запуска сборщика мусора |
 | `RGSTR_UPLOAD_TTL` | `24h` | Через сколько удалять незавершённые загрузки |
 
@@ -96,6 +98,69 @@ RGSTR_USERS="alice:$2a$10$...,bob:$2a$10$..."
 ```bash
 go run ./cmd/mkpasswd alice mypassword
 # RGSTR_USERS=alice:$2a$10$...
+```
+
+---
+
+## Публичные и приватные репозитории
+
+По умолчанию при включённой аутентификации все репозитории приватные. Переменная `RGSTR_PUBLIC_REPOS` задаёт список паттернов, для которых анонимный `pull` разрешён без авторизации.
+
+### Матрица доступа
+
+|  | pull | push |
+|---|---|---|
+| Публичный репо | без авторизации ✓ | требуется токен ✗ |
+| Приватный репо | требуется токен ✗ | требуется токен ✗ |
+| Любой репо при `AUTH_ENABLED=false` | без авторизации ✓ | без авторизации ✓ |
+
+### Паттерны
+
+| Паттерн | Совпадает | Не совпадает |
+|---|---|---|
+| `alpine` | `alpine` | `myns/alpine` |
+| `library/*` | `library/ubuntu`, `library/alpine` | `library/ns/ubuntu` |
+| `public/**` | `public/myimage`, `public/ns/myimage` | `other/myimage` |
+| `**` | любой репозиторий | — |
+
+- `*` — любой одиночный сегмент пути (без слешей)
+- `**` — любой путь, включая слеши
+- `?` — любой одиночный символ
+
+### Примеры
+
+```bash
+# Всё в namespace "public/" доступно без логина, остальное приватное
+RGSTR_PUBLIC_REPOS=public/**
+
+# Несколько паттернов через запятую
+RGSTR_PUBLIC_REPOS=library/*,public/**,alpine
+
+# Все репозитории публичные для pull (зеркало без ограничений)
+RGSTR_PUBLIC_REPOS=**
+
+# Все репозитории приватные (оставить пустым)
+RGSTR_PUBLIC_REPOS=
+```
+
+### Поведение клиентов
+
+```bash
+# Публичный репо — pull без docker login
+docker pull registry.example.com/public/myimage:latest
+
+# Публичный репо — push требует авторизации
+docker push registry.example.com/public/myimage:latest
+# → unauthorized: authentication required
+
+# Приватный репо — pull требует авторизации
+docker pull registry.example.com/private/myimage:latest
+# → unauthorized: authentication required
+
+# После docker login — доступ ко всему
+docker login registry.example.com
+docker pull registry.example.com/private/myimage:latest
+docker push registry.example.com/public/myimage:latest
 ```
 
 ---
