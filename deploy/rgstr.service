@@ -1,6 +1,6 @@
 [Unit]
 Description=rgstr — OCI/Docker container registry
-Documentation=https://github.com/user/rgstr
+Documentation=https://github.com/piqab/rgstr
 After=network.target
 Wants=network-online.target
 

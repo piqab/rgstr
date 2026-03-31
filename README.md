@@ -25,7 +25,7 @@
 ### Локально
 
 ```bash
-git clone https://github.com/user/rgstr
+git clone https://github.com/piqab/rgstr
 cd rgstr
 
 go mod tidy
