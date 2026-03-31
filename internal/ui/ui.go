@@ -273,8 +273,8 @@ async function deleteTag(btn, repo, tag) {
   // 2. Delete by digest
   const delRes = await api('/v2/' + repo + '/manifests/' + digest, {method: 'DELETE'});
   if (delRes.ok || delRes.status === 202) {
-    btn.closest('.tag-row').remove();
     toast('Deleted ' + repo + ':' + tag);
+    await loadAll();
   } else {
     toast('Delete failed: ' + delRes.status);
     btn.disabled = false;
