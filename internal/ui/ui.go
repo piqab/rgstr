@@ -266,12 +266,16 @@ async function deleteTag(btn, repo, tag) {
   if (!confirm('Delete ' + repo + ':' + tag + '?\nThis will remove the manifest. Blobs are cleaned up by GC.')) return;
   btn.disabled = true;
   // 1. Get digest
-  const headRes = await api('/v2/' + repo + '/manifests/' + tag);
-  if (!headRes.ok) { toast('Could not resolve manifest digest'); btn.disabled = false; return; }
+  const headRes = await api('/v2/' + repo + '/manifests/' + tag, {
+    headers: {'Accept': 'application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json'}
+  });
+  if (!headRes.ok) { toast('Could not resolve manifest digest: ' + headRes.status); btn.disabled = false; return; }
   const digest = headRes.headers.get('Docker-Content-Digest');
+  console.log('delete', repo, tag, 'digest:', digest);
   if (!digest) { toast('No digest in response'); btn.disabled = false; return; }
   // 2. Delete by digest
   const delRes = await api('/v2/' + repo + '/manifests/' + digest, {method: 'DELETE'});
+  console.log('delete result:', delRes.status);
   if (delRes.ok || delRes.status === 202) {
     toast('Deleted ' + repo + ':' + tag);
     await loadAll();
