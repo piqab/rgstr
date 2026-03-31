@@ -1,0 +1,50 @@
+[Unit]
+Description=rgstr — OCI/Docker container registry
+Documentation=https://github.com/user/rgstr
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rgstr
+Group=rgstr
+WorkingDirectory=/opt/rgstr
+
+ExecStart=/opt/rgstr/rgstr
+Restart=on-failure
+RestartSec=5s
+
+# Storage and listen address
+Environment=RGSTR_ADDR=:5000
+Environment=RGSTR_STORAGE=/var/lib/rgstr
+
+# Auth — set these or override via /etc/rgstr/env
+Environment=RGSTR_AUTH_ENABLED=false
+Environment=RGSTR_AUTH_SECRET=change-me-in-production
+# EnvironmentFile=-/etc/rgstr/env
+
+# Timeouts
+Environment=RGSTR_GC_INTERVAL=1h
+Environment=RGSTR_UPLOAD_TTL=24h
+Environment=RGSTR_TOKEN_TTL=1h
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rgstr
+ProtectHome=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

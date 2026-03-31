@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  rgstr:
+    build: .
+    image: rgstr:latest
+    container_name: rgstr
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - rgstr-data:/data
+    environment:
+      RGSTR_ADDR:         ":5000"
+      RGSTR_STORAGE:      "/data"
+      RGSTR_AUTH_ENABLED: "false"
+      # To enable auth:
+      #   RGSTR_AUTH_ENABLED: "true"
+      #   RGSTR_AUTH_SECRET:  "change-me-in-production"
+      #   RGSTR_USERS:        "alice:$$2a$$10$$..."   # double-$ to escape in compose
+      RGSTR_GC_INTERVAL:  "1h"
+      RGSTR_UPLOAD_TTL:   "24h"
+      RGSTR_TOKEN_TTL:    "1h"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # Optional: nginx TLS termination proxy
+  # Uncomment if you want HTTPS without touching the registry binary.
+  # nginx:
+  #   image: nginx:alpine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/conf.d/rgstr.conf:ro
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #   depends_on:
+  #     - rgstr
+
+volumes:
+  rgstr-data:
