@@ -60,8 +60,14 @@ func TestMatchGlob(t *testing.T) {
 		{"public/**", "public/ns/myimage", true},
 		{"public/**", "other/myimage", false},
 		{"*", "anything", true},
-		{"*", "ns/something", false},           // * doesn't cross /
+		{"*", "ns/something", false},            // * doesn't cross /
 		{"**", "anything/at/all", true},
+		{"**/public/**", "alex/public/alpine", true},
+		{"**/public/**", "alex/public/ns/alpine", true},
+		{"**/public/**", "public/alpine", true},
+		{"**/public/**", "alex/private/alpine", false},
+		{"**/public", "alex/public", true},
+		{"**/public", "alex/private", false},
 	}
 	for _, c := range cases {
 		got := matchGlob(c.pattern, c.name)
