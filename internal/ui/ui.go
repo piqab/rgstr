@@ -103,7 +103,8 @@ header span{font-size:.8rem;opacity:.5;margin-left:auto}
 
 <header>
   <h1>rgstr</h1>
-  <span id="hdr-user"></span>
+  <span id="hdr-user" style="font-size:.82rem;opacity:.7;margin-left:auto"></span>
+  <button onclick="logout()" id="btn-logout" style="display:none;margin-left:12px;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:.82rem">Sign out</button>
 </header>
 
 <div id="app" style="display:none">
@@ -140,6 +141,7 @@ async function doLogin() {
   document.getElementById('li-err').style.display = 'none';
   document.getElementById('login-overlay').style.display = 'none';
   document.getElementById('hdr-user').textContent = user;
+  document.getElementById('btn-logout').style.display = 'block';
   document.getElementById('app').style.display = 'block';
   loadAll();
 }
@@ -211,11 +213,11 @@ function repoCard(r) {
 
 function tagRow(repo, tag) {
   return ` + "`" + `
-  <div class="tag-row" id="row-${esc(repo)}-${esc(tag)}">
+  <div class="tag-row">
     <span class="tag-name">:${esc(tag)}</span>
-    <span class="tag-digest" id="digest-${esc(repo)}-${esc(tag)}">loading…</span>
-    <span class="tag-size"  id="size-${esc(repo)}-${esc(tag)}"></span>
-    <button class="btn-del" onclick="deleteTag('${esc(repo)}','${esc(tag)}')">delete</button>
+    <span class="tag-digest">loading…</span>
+    <span class="tag-size"></span>
+    <button class="btn-del" onclick="deleteTag(this,'${esc(repo)}','${esc(tag)}')">delete</button>
   </div>` + "`" + `;
 }
 
@@ -233,8 +235,8 @@ async function loadTagDetails(header) {
   const rows = body.querySelectorAll('.tag-row');
   for (const row of rows) {
     const tag = row.querySelector('.tag-name').textContent.slice(1);
-    const digestEl = row.querySelector('[id^="digest-"]');
-    const sizeEl = row.querySelector('[id^="size-"]');
+    const digestEl = row.querySelector('.tag-digest');
+    const sizeEl = row.querySelector('.tag-size');
     if (digestEl.textContent !== 'loading…') continue;
     try {
       const res = await api('/v2/' + repo + '/manifests/' + tag, {
@@ -260,22 +262,36 @@ function calcSize(manifest) {
 
 // ── Delete ────────────────────────────────────────────────────────────────────
 
-async function deleteTag(repo, tag) {
+async function deleteTag(btn, repo, tag) {
   if (!confirm('Delete ' + repo + ':' + tag + '?\nThis will remove the manifest. Blobs are cleaned up by GC.')) return;
+  btn.disabled = true;
   // 1. Get digest
   const headRes = await api('/v2/' + repo + '/manifests/' + tag);
-  if (!headRes.ok) { toast('Could not resolve manifest digest'); return; }
+  if (!headRes.ok) { toast('Could not resolve manifest digest'); btn.disabled = false; return; }
   const digest = headRes.headers.get('Docker-Content-Digest');
-  if (!digest) { toast('No digest in response'); return; }
+  if (!digest) { toast('No digest in response'); btn.disabled = false; return; }
   // 2. Delete by digest
   const delRes = await api('/v2/' + repo + '/manifests/' + digest, {method: 'DELETE'});
   if (delRes.ok || delRes.status === 202) {
-    const row = document.getElementById('row-' + repo + '-' + tag);
-    if (row) row.remove();
+    btn.closest('.tag-row').remove();
     toast('Deleted ' + repo + ':' + tag);
   } else {
     toast('Delete failed: ' + delRes.status);
+    btn.disabled = false;
   }
+}
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+
+function logout() {
+  sessionStorage.removeItem('rgstr_creds');
+  sessionStorage.removeItem('rgstr_user');
+  creds = '';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-overlay').style.display = 'flex';
+  document.getElementById('li-pass').value = '';
+  document.getElementById('btn-logout').style.display = 'none';
+  document.getElementById('hdr-user').textContent = '';
 }
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -314,6 +330,7 @@ function toast(msg) {
     creds = saved;
     document.getElementById('login-overlay').style.display = 'none';
     document.getElementById('app').style.display = 'block';
+    document.getElementById('btn-logout').style.display = 'block';
     if (user) document.getElementById('hdr-user').textContent = user;
     loadAll();
   }
