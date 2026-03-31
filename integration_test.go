@@ -18,6 +18,7 @@ import (
 	"rgstr/internal/auth"
 	"rgstr/internal/config"
 	"rgstr/internal/registry"
+	"rgstr/internal/stats"
 	"rgstr/internal/storage"
 )
 
@@ -42,7 +43,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *storage.Filesystem) {
 		t.Fatalf("storage: %v", err)
 	}
 	tokenSvc := auth.NewTokenService(cfg)
-	reg := registry.New(store, tokenSvc, cfg)
+	counter := stats.New(cfg.StorageRoot)
+	reg := registry.New(store, tokenSvc, cfg, counter)
 
 	mux := http.NewServeMux()
 	reg.Mount(mux)

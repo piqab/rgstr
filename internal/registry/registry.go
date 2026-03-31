@@ -19,6 +19,7 @@ import (
 
 	"rgstr/internal/auth"
 	"rgstr/internal/config"
+	"rgstr/internal/stats"
 	"rgstr/internal/storage"
 )
 
@@ -42,21 +43,24 @@ var (
 
 // Registry is the top-level HTTP handler for the OCI registry.
 type Registry struct {
-	store    *storage.Filesystem
-	tokenSvc *auth.TokenService
-	cfg      *config.Config
+	store       *storage.Filesystem
+	tokenSvc    *auth.TokenService
+	cfg         *config.Config
+	counter     *stats.Counter
+	authHandler *auth.Handler
 }
 
 // New creates a Registry.
-func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Config) *Registry {
-	return &Registry{store: store, tokenSvc: tokenSvc, cfg: cfg}
+func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Config, counter *stats.Counter) *Registry {
+	return &Registry{store: store, tokenSvc: tokenSvc, cfg: cfg, counter: counter}
 }
 
 // Mount registers the registry handler on mux. The auth middleware is always
 // installed so that /v2/auth works even when auth is disabled.
 func (reg *Registry) Mount(mux *http.ServeMux) {
 	inner := http.HandlerFunc(reg.dispatch)
-	mux.Handle("/v2/", auth.NewHandler(reg.cfg, reg.tokenSvc, inner))
+	reg.authHandler = auth.NewHandler(reg.cfg, reg.tokenSvc, inner)
+	mux.Handle("/v2/", reg.authHandler)
 
 	// /healthz is intentionally unauthenticated — used by load balancers and
 	// container orchestrators to determine liveness.
@@ -65,6 +69,8 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	mux.HandleFunc("/stats", reg.handleStats)
 }
 
 // dispatch is the central router.
@@ -467,6 +473,7 @@ func (reg *Registry) handleGetManifest(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
+	reg.counter.RecordPull(repo)
 	w.Header().Set("Content-Type", mf.ContentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(mf.Content)))
 	w.Header().Set("Docker-Content-Digest", string(mf.Digest))
@@ -592,6 +599,65 @@ func nullableStringSlice(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// ─── Stats ────────────────────────────────────────────────────────────────────
+
+type repoStat struct {
+	Name  string   `json:"name"`
+	Tags  []string `json:"tags"`
+	Pulls int64    `json:"pulls"`
+}
+
+type statsResponse struct {
+	Repositories []repoStat `json:"repositories"`
+	TotalRepos   int        `json:"total_repos"`
+	TotalPulls   int64      `json:"total_pulls"`
+}
+
+func (reg *Registry) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if reg.cfg.AuthEnabled {
+		if _, ok := reg.authHandler.CheckBasic(r); !ok {
+			w.Header().Set("WWW-Authenticate", `Basic realm="rgstr"`)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "authentication required"})
+			return
+		}
+	}
+
+	repos, err := reg.store.ListRepositories()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+		return
+	}
+
+	snap := reg.counter.Snapshot()
+	var totalPulls int64
+	repoStats := make([]repoStat, 0, len(repos))
+
+	for _, name := range repos {
+		tags, _ := reg.store.ListTags(name)
+		pulls := snap.Pulls[name]
+		totalPulls += pulls
+		repoStats = append(repoStats, repoStat{
+			Name:  name,
+			Tags:  nullableStringSlice(tags),
+			Pulls: pulls,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(statsResponse{
+		Repositories: repoStats,
+		TotalRepos:   len(repos),
+		TotalPulls:   totalPulls,
+	})
 }
 
 // ─── Repository name validation ───────────────────────────────────────────────

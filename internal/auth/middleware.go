@@ -212,6 +212,20 @@ func (h *Handler) checkPassword(username, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
+// CheckBasic validates a Basic Authorization header against the configured users.
+// Returns the username and true on success.
+func (h *Handler) CheckBasic(r *http.Request) (string, bool) {
+	hdr := r.Header.Get("Authorization")
+	if !strings.HasPrefix(hdr, "Basic ") {
+		return "", false
+	}
+	user, pass, err := parseBasic(hdr)
+	if err != nil {
+		return "", false
+	}
+	return user, h.checkPassword(user, pass)
+}
+
 // isPublicReadRequest returns true when the request is a read operation (GET/HEAD)
 // targeting a repository that matches one of the public repo patterns.
 func (h *Handler) isPublicReadRequest(r *http.Request) bool {
