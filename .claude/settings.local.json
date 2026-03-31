@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod:*)",
+      "Bash(where go:*)",
+      "Read(//usr/local/go/**)",
+      "Read(//c/Users/asusa/projects/rgstr/$GOPATH/**)",
+      "Read(//c//**)",
+      "Read(//c/Users/asusa/go/**)",
+      "Bash(find /c -name go.exe -maxdepth 6)",
+      "Bash(go version:*)",
+      "Bash(export PATH=\"$PATH:/c/Program Files/Go/bin\")",
+      "Bash(go build:*)",
+      "Bash(go test:*)"
+    ]
+  }
+}
