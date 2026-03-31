@@ -263,7 +263,8 @@ function calcSize(manifest) {
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 async function deleteTag(btn, repo, tag) {
-  if (!confirm('Delete ' + repo + ':' + tag + '?\nThis will remove the manifest. Blobs are cleaned up by GC.')) return;
+  console.log('deleteTag called', repo, tag);
+  if (!confirm('Delete ' + repo + ':' + tag + '?\nThis will remove the manifest. Blobs are cleaned up by GC.')) { console.log('cancelled'); return; }
   btn.disabled = true;
   // 1. Get digest
   const headRes = await api('/v2/' + repo + '/manifests/' + tag, {
