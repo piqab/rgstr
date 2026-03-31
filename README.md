@@ -64,6 +64,8 @@ docker compose up -d
 
 `docker compose` автоматически подхватывает `.env` из текущей директории и передаёт все переменные в контейнер. `RGSTR_STORAGE` всегда переопределяется на `/data` (Docker volume).
 
+> **Внимание:** данные хранятся в named volume `rgstr-data` (управляется Docker), а не в локальной папке `./data`. Найти volume на хосте: `docker volume inspect rgstr-data`. Если нужна локальная папка — замените в `docker-compose.yml` `rgstr-data:/data` на `./data:/data` и удалите секцию `volumes: rgstr-data:`.
+
 ---
 
 ## Конфигурация
@@ -125,10 +127,11 @@ go run ./cmd/mkpasswd alice mypassword
 | `alpine` | `alpine` | `myns/alpine` |
 | `library/*` | `library/ubuntu`, `library/alpine` | `library/ns/ubuntu` |
 | `public/**` | `public/myimage`, `public/ns/myimage` | `other/myimage` |
+| `**/public/**` | `alex/public/alpine`, `public/alpine`, `a/b/public/img` | `alex/private/alpine` |
 | `**` | любой репозиторий | — |
 
 - `*` — любой одиночный сегмент пути (без слешей)
-- `**` — любой путь, включая слеши
+- `**` — ноль или более сегментов пути, включая слеши (может стоять в любом месте паттерна)
 - `?` — любой одиночный символ
 
 ### Примеры
@@ -136,6 +139,9 @@ go run ./cmd/mkpasswd alice mypassword
 ```bash
 # Всё в namespace "public/" доступно без логина, остальное приватное
 RGSTR_PUBLIC_REPOS=public/**
+
+# Репозитории с сегментом "public" в любом месте пути
+RGSTR_PUBLIC_REPOS=**/public/**
 
 # Несколько паттернов через запятую
 RGSTR_PUBLIC_REPOS=library/*,public/**,alpine
