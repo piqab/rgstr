@@ -184,7 +184,7 @@ async function loadAll() {
     results.push(...settled);
   }
 
-  allRepos = results;
+  allRepos = results.filter(r => r.tags && r.tags.length > 0);
   renderRepos(allRepos);
 }
 
@@ -263,8 +263,7 @@ function calcSize(manifest) {
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 async function deleteTag(btn, repo, tag) {
-  console.log('deleteTag called', repo, tag);
-  if (!confirm('Delete ' + repo + ':' + tag + '?\nThis will remove the manifest. Blobs are cleaned up by GC.')) { console.log('cancelled'); return; }
+  if (!confirm('Delete ' + repo + ':' + tag + '?\nThis will remove the manifest. Blobs are cleaned up by GC.')) return;
   btn.disabled = true;
   // 1. Get digest
   const headRes = await api('/v2/' + repo + '/manifests/' + tag, {
@@ -272,11 +271,9 @@ async function deleteTag(btn, repo, tag) {
   });
   if (!headRes.ok) { toast('Could not resolve manifest digest: ' + headRes.status); btn.disabled = false; return; }
   const digest = headRes.headers.get('Docker-Content-Digest');
-  console.log('delete', repo, tag, 'digest:', digest);
   if (!digest) { toast('No digest in response'); btn.disabled = false; return; }
   // 2. Delete by digest
   const delRes = await api('/v2/' + repo + '/manifests/' + digest, {method: 'DELETE'});
-  console.log('delete result:', delRes.status);
   if (delRes.ok || delRes.status === 202) {
     toast('Deleted ' + repo + ':' + tag);
     await loadAll();
