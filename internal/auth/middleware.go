@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -22,6 +23,15 @@ const (
 
 // Handler wraps an inner http.Handler and enforces Bearer token authentication.
 // It also exposes the token endpoint at /v2/auth and /v2/token.
+//
+// Public / private model (when AuthEnabled = true):
+//
+//	                 | pull | push |
+//	 public repo     |  ✓   |  ✗   |  anonymous pull allowed
+//	 private repo    |  ✗   |  ✗   |  credentials required for everything
+//	 authenticated   |  ✓   |  ✓   |  valid token grants full access
+//
+// Public repos are configured via RGSTR_PUBLIC_REPOS (glob patterns).
 type Handler struct {
 	cfg      *config.Config
 	tokenSvc *TokenService
@@ -34,39 +44,47 @@ func NewHandler(cfg *config.Config, tokenSvc *TokenService, inner http.Handler) 
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Always add the API version header.
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 
-	// Token endpoint — open to all.
+	// Token endpoint — always open.
 	if r.URL.Path == "/v2/auth" || r.URL.Path == "/v2/token" {
 		h.handleToken(w, r)
 		return
 	}
 
+	// Auth disabled → let everything through.
 	if !h.cfg.AuthEnabled {
 		h.inner.ServeHTTP(w, r)
 		return
 	}
 
-	subject, access, ok := h.authenticate(w, r)
-	if !ok {
-		return // challenge already written
+	// Try to authenticate with the provided credentials / token.
+	subject, access, ok := h.tryAuthenticate(r)
+	if ok {
+		ctx := context.WithValue(r.Context(), ctxSubject, subject)
+		ctx = context.WithValue(ctx, ctxAccess, access)
+		h.inner.ServeHTTP(w, r.WithContext(ctx))
+		return
 	}
 
-	ctx := context.WithValue(r.Context(), ctxSubject, subject)
-	ctx = context.WithValue(ctx, ctxAccess, access)
-	h.inner.ServeHTTP(w, r.WithContext(ctx))
+	// No valid credentials — allow anonymous read on public repositories.
+	if h.isPublicReadRequest(r) {
+		h.inner.ServeHTTP(w, r)
+		return
+	}
+
+	// Otherwise challenge the client to authenticate.
+	h.challenge(w, r)
 }
 
-// authenticate parses the Authorization header. Returns false and writes a
-// challenge if the request is not properly authenticated.
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (subject string, access []Access, ok bool) {
+// tryAuthenticate parses the Authorization header and returns the subject and
+// access claims if authentication succeeds. It does NOT write any response.
+func (h *Handler) tryAuthenticate(r *http.Request) (subject string, access []Access, ok bool) {
 	hdr := r.Header.Get("Authorization")
 	switch {
 	case strings.HasPrefix(hdr, "Bearer "):
 		claims, err := h.tokenSvc.Verify(strings.TrimPrefix(hdr, "Bearer "))
 		if err != nil {
-			h.challenge(w, r)
 			return "", nil, false
 		}
 		return claims.Subject, claims.Access, true
@@ -74,25 +92,25 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (subject 
 	case strings.HasPrefix(hdr, "Basic "):
 		user, pass, err := parseBasic(hdr)
 		if err != nil || !h.checkPassword(user, pass) {
-			h.challenge(w, r)
 			return "", nil, false
 		}
-		// Basic auth grants full access; actual scope is enforced by token claims
-		// when the client subsequently obtains a token.
+		// Basic auth grants full access (no scope restriction).
 		return user, nil, true
-
-	default:
-		h.challenge(w, r)
-		return "", nil, false
 	}
+	return "", nil, false
 }
 
 // handleToken issues a JWT token to a client that presents valid credentials.
-// Supports both GET (Docker CLI) and POST (some tooling).
+//
+// Public-repo anonymous pull:
+//   - If auth is enabled but the client provides no (or invalid) credentials,
+//     we still issue a pull-only token for any public repos in the requested scope.
+//   - Private repos in the scope are silently dropped from the issued token,
+//     so the client gets partial access (pull on public only).
+//   - If the scope contains only private repos and no credentials → 401.
 func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 	var username, password string
 
-	// Credentials may come from Basic auth header or query params.
 	if hdr := r.Header.Get("Authorization"); strings.HasPrefix(hdr, "Basic ") {
 		user, pass, err := parseBasic(hdr)
 		if err == nil {
@@ -105,20 +123,53 @@ func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 		password = q.Get("password")
 	}
 
-	if h.cfg.AuthEnabled && !h.checkPassword(username, password) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(errBody("UNAUTHORIZED", "invalid credentials"))
-		return
-	}
+	authenticated := !h.cfg.AuthEnabled || h.checkPassword(username, password)
 
+	// Parse requested scope.
 	scope := r.URL.Query().Get("scope")
-	var access []Access
-	if scope != "" {
-		access = ParseScope(scope)
+	requestedAccess := ParseScope(scope)
+
+	var grantedAccess []Access
+
+	if authenticated {
+		// Authenticated users get exactly what they asked for.
+		grantedAccess = requestedAccess
+	} else {
+		// Unauthenticated: grant pull-only on public repos, drop the rest.
+		for _, a := range requestedAccess {
+			if a.Type != "repository" || !h.isPublicRepo(a.Name) {
+				continue
+			}
+			// Only grant pull, even if the client asked for push too.
+			grantedAccess = append(grantedAccess, Access{
+				Type:    a.Type,
+				Name:    a.Name,
+				Actions: []string{"pull"},
+			})
+		}
+
+		// If nothing was granted and credentials were actually provided (but
+		// wrong), respond with 401 so the client knows to re-authenticate.
+		if len(grantedAccess) == 0 {
+			if username != "" {
+				// Wrong credentials.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(errBody("UNAUTHORIZED", "invalid credentials"))
+				return
+			}
+			// Truly anonymous request for a private repo — challenge.
+			if len(requestedAccess) > 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(errBody("UNAUTHORIZED", "authentication required"))
+				return
+			}
+			// Empty scope (e.g. /v2/ ping) — issue an empty token.
+		}
 	}
 
-	token, err := h.tokenSvc.Issue(username, access)
+	token, err := h.tokenSvc.Issue(username, grantedAccess)
 	if err != nil {
 		http.Error(w, "token generation failed", http.StatusInternalServerError)
 		return
@@ -126,15 +177,14 @@ func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":      token,
-		"access_token": token, // some clients expect this field name
-		"expires_in": int(h.tokenSvc.TokenTTL().Seconds()),
-		"issued_at":  time.Now().UTC().Format(time.RFC3339),
+		"token":        token,
+		"access_token": token,
+		"expires_in":   int(h.tokenSvc.TokenTTL().Seconds()),
+		"issued_at":    time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
-// challenge writes a 401 response with a WWW-Authenticate header that tells
-// the Docker client where and how to obtain a token.
+// challenge writes a 401 response with a WWW-Authenticate header.
 func (h *Handler) challenge(w http.ResponseWriter, r *http.Request) {
 	scope := inferScope(r)
 	realm := h.tokenSvc.AuthRealm()
@@ -160,6 +210,26 @@ func (h *Handler) checkPassword(username, password string) bool {
 		return false
 	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
+
+// isPublicReadRequest returns true when the request is a read operation (GET/HEAD)
+// targeting a repository that matches one of the public repo patterns.
+func (h *Handler) isPublicReadRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	repo := repoFromPath(r.URL.Path)
+	return repo != "" && h.isPublicRepo(repo)
+}
+
+// isPublicRepo reports whether name matches any of the configured public repo patterns.
+func (h *Handler) isPublicRepo(name string) bool {
+	for _, pattern := range h.cfg.PublicRepos {
+		if matchGlob(pattern, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── Context accessors ────────────────────────────────────────────────────────
@@ -189,7 +259,7 @@ func HasAccess(ctx context.Context, resourceType, name, action string) bool {
 	return false
 }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func parseBasic(hdr string) (user, pass string, err error) {
 	b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(hdr, "Basic "))
@@ -203,26 +273,65 @@ func parseBasic(hdr string) (user, pass string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// inferScope derives a reasonable scope string from the request URL and method
-// to include in the WWW-Authenticate challenge so that Docker CLI requests
-// the right scope from the token endpoint automatically.
-func inferScope(r *http.Request) string {
-	path := strings.TrimPrefix(r.URL.Path, "/v2/")
-	if path == "" {
-		return ""
-	}
+// repoFromPath extracts the repository name from a /v2/<name>/... URL.
+func repoFromPath(urlPath string) string {
+	p := strings.TrimPrefix(urlPath, "/v2/")
 	for _, marker := range []string{"/manifests/", "/blobs/", "/tags/"} {
-		if idx := strings.Index(path, marker); idx >= 0 {
-			repo := path[:idx]
-			action := "pull"
-			switch r.Method {
-			case http.MethodPut, http.MethodPost, http.MethodPatch, http.MethodDelete:
-				action = "push"
-			}
-			return "repository:" + repo + ":" + action
+		if idx := strings.Index(p, marker); idx >= 0 {
+			return p[:idx]
 		}
 	}
 	return ""
+}
+
+// inferScope derives a scope string from the request for WWW-Authenticate.
+func inferScope(r *http.Request) string {
+	repo := repoFromPath(r.URL.Path)
+	if repo == "" {
+		return ""
+	}
+	action := "pull"
+	switch r.Method {
+	case http.MethodPut, http.MethodPost, http.MethodPatch, http.MethodDelete:
+		action = "push"
+	}
+	return "repository:" + repo + ":" + action
+}
+
+// matchGlob matches name against a glob pattern where:
+//   - "*"  matches any sequence of characters except "/"
+//   - "**" matches any sequence of characters including "/"
+//   - "?"  matches any single character except "/"
+//
+// Examples:
+//
+//	matchGlob("public/**", "public/myimage")     → true
+//	matchGlob("public/**", "public/ns/myimage")  → true
+//	matchGlob("library/*", "library/ubuntu")     → true
+//	matchGlob("library/*", "library/ns/ubuntu")  → false
+//	matchGlob("alpine",    "alpine")             → true
+func matchGlob(pattern, name string) bool {
+	// Fast path: exact match.
+	if pattern == name {
+		return true
+	}
+	// "**" — replace with a placeholder, then use path.Match on cleaned path.
+	if strings.Contains(pattern, "**") {
+		// Split on "**" and check prefix/suffix manually.
+		parts := strings.SplitN(pattern, "**", 2)
+		prefix, suffix := parts[0], parts[1]
+		if !strings.HasPrefix(name, prefix) {
+			return false
+		}
+		rest := name[len(prefix):]
+		if suffix == "" {
+			return true
+		}
+		return strings.HasSuffix(rest, strings.TrimPrefix(suffix, "/"))
+	}
+	// Delegate single-segment glob to path.Match (handles * and ?).
+	ok, err := path.Match(pattern, name)
+	return err == nil && ok
 }
 
 func errBody(code, msg string) map[string]interface{} {

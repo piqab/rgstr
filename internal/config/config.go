@@ -25,6 +25,14 @@ type Config struct {
 	// Format: "alice:$2b$...,bob:$2b$..."
 	Users map[string]string
 
+	// PublicRepos is a list of repository name patterns that are readable
+	// without authentication. Supports glob wildcards:
+	//   *        — any single path segment   (e.g. "alpine" but not "ns/alpine")
+	//   **       — any path including slashes (e.g. "public/**")
+	//   ?        — any single character
+	// Examples: "public/**", "library/ubuntu", "*"
+	PublicRepos []string
+
 	GCInterval time.Duration
 	UploadTTL  time.Duration // stale upload sessions older than this are GC'd
 }
@@ -44,11 +52,22 @@ func Load() *Config {
 		AuthIssuer:  env("RGSTR_AUTH_ISSUER", "rgstr"),
 		TokenTTL:    envDuration("RGSTR_TOKEN_TTL", time.Hour),
 
-		Users: parseUsers(env("RGSTR_USERS", "")),
+		Users:       parseUsers(env("RGSTR_USERS", "")),
+		PublicRepos: parseList(env("RGSTR_PUBLIC_REPOS", "")),
 
 		GCInterval: envDuration("RGSTR_GC_INTERVAL", time.Hour),
 		UploadTTL:  envDuration("RGSTR_UPLOAD_TTL", 24*time.Hour),
 	}
+}
+
+func parseList(raw string) []string {
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func parseUsers(raw string) map[string]string {
