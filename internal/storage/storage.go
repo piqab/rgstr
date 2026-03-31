@@ -543,6 +543,22 @@ func (fs *Filesystem) DeleteManifest(repo, reference string) error {
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
+		// Also remove any tags that pointed to this digest.
+		tagsDir := filepath.Join(fs.repoBase(repo), "manifests", "tags")
+		entries, _ := os.ReadDir(tagsDir)
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			tagFile := filepath.Join(tagsDir, e.Name())
+			hex, err := os.ReadFile(tagFile)
+			if err != nil {
+				continue
+			}
+			if strings.TrimSpace(string(hex)) == d.Hex() {
+				os.Remove(tagFile)
+			}
+		}
 		return nil
 	}
 
