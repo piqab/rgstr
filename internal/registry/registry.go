@@ -21,6 +21,7 @@ import (
 	"rgstr/internal/config"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
+	"rgstr/internal/ui"
 )
 
 // ─── URL patterns ─────────────────────────────────────────────────────────────
@@ -71,6 +72,8 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("/stats", reg.handleStats)
+
+	ui.New(reg.cfg, reg.authHandler).Mount(mux)
 }
 
 // dispatch is the central router.
