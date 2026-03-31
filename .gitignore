@@ -1,0 +1,20 @@
+# Секреты — никогда не коммитить
+.env
+
+# Бинари
+rgstr
+rgstr.exe
+rgstr-linux-*
+rgstr-windows-*
+
+# Данные реестра
+data/
+
+# Тесты
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
