@@ -223,7 +223,58 @@ RGSTR_TLS_KEY=/etc/letsencrypt/live/registry.example.com/privkey.pem \
 ./rgstr
 ```
 
-Или используйте nginx/Caddy как TLS-терминатор перед реестром.
+Или используйте nginx/Caddy/HAProxy как TLS-терминатор перед реестром.
+
+---
+
+## Reverse proxy
+
+### nginx — системный (порты 80/443 уже заняты)
+
+Если на хосте уже работает nginx, не нужно поднимать контейнерный. Скопируйте шаблон из репозитория и подключите его:
+
+```bash
+sudo cp nginx.conf /etc/nginx/conf.d/rgstr.conf
+# Замените registry.example.com на свой домен
+sudo nano /etc/nginx/conf.d/rgstr.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+В docker-compose.yml оставьте секцию nginx закомментированной, rgstr слушает на `localhost:5000`.
+
+### nginx — контейнерный (docker compose)
+
+Раскомментируйте секцию `nginx` в `docker-compose.yml`. Подходит когда на хосте нет другого веб-сервера и порты 80/443 свободны.
+
+### HAProxy
+
+Альтернатива nginx — подходит если HAProxy уже используется как единая точка входа для нескольких сервисов.
+
+Пример конфигурации (`/etc/haproxy/haproxy.cfg`):
+
+```
+frontend https_in
+    bind *:443 ssl crt /etc/letsencrypt/live/registry.example.com/fullchain.pem
+    default_backend rgstr
+
+    # HTTP → HTTPS редирект
+    bind *:80
+    redirect scheme https if !{ ssl_fc }
+
+backend rgstr
+    option forwardfor
+    http-request set-header X-Forwarded-Proto https
+    # Отключить буферизацию для больших образов
+    option http-server-close
+    server rgstr 127.0.0.1:5000 check
+```
+
+```bash
+sudo haproxy -c -f /etc/haproxy/haproxy.cfg
+sudo systemctl reload haproxy
+```
+
+> HAProxy передаёт TLS-трафик напрямую бэкенду без буферизации, что удобно для больших образов.
 
 ---
 
