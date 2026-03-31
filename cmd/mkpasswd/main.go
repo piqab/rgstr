@@ -2,12 +2,13 @@
 //
 // Usage:
 //   go run ./cmd/mkpasswd alice mysecret
-//   # Output: alice:$2a$12$...
+//   # Output: alice:$$2a$$12$$...  ($$ is escaped for Docker Compose env_file)
 package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -25,5 +26,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("RGSTR_USERS=%s:%s\n", username, string(hash))
+	// Escape $ as $$ so the hash is ready to paste into .env for Docker Compose.
+	escaped := strings.ReplaceAll(string(hash), "$", "$$")
+	fmt.Printf("RGSTR_USERS=%s:%s\n", username, escaped)
 }
