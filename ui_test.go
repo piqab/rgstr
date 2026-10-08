@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -194,11 +193,11 @@ func TestUIMeAuthDisabled(t *testing.T) {
 	resp := do(t, "GET", srv.URL+"/ui/api/me", nil, nil)
 	defer resp.Body.Close()
 	var me struct {
-		AuthEnabled bool     `json:"auth_enabled"`
-		Actions     []string `json:"actions"`
+		AuthEnabled bool `json:"auth_enabled"`
+		Admin       bool `json:"admin"`
 	}
 	json.NewDecoder(resp.Body).Decode(&me)
-	if me.AuthEnabled || len(me.Actions) != 3 {
+	if me.AuthEnabled || !me.Admin {
 		t.Errorf("me with auth disabled: got %+v", me)
 	}
 }
@@ -209,9 +208,9 @@ func TestUILoginFlow(t *testing.T) {
 	// Anonymous: auth on, no user, repos refused.
 	resp := do(t, "GET", srv.URL+"/ui/api/me", nil, nil)
 	var me struct {
-		AuthEnabled bool     `json:"auth_enabled"`
-		User        string   `json:"user"`
-		Actions     []string `json:"actions"`
+		AuthEnabled bool   `json:"auth_enabled"`
+		User        string `json:"user"`
+		Admin       bool   `json:"admin"`
 	}
 	json.NewDecoder(resp.Body).Decode(&me)
 	resp.Body.Close()
@@ -246,8 +245,8 @@ func TestUILoginFlow(t *testing.T) {
 	resp = do(t, "GET", srv.URL+"/ui/api/me", nil, bearer)
 	json.NewDecoder(resp.Body).Decode(&me)
 	resp.Body.Close()
-	if me.User != "bob" || strings.Join(me.Actions, ",") != "pull,push" {
-		t.Errorf("bob me: got %+v want user bob, actions pull,push", me)
+	if me.User != "bob" || me.Admin {
+		t.Errorf("bob me: got %+v want user bob, not admin", me)
 	}
 	getRepos(t, srv.URL, bearer)
 

@@ -19,6 +19,7 @@ import (
 
 	"rgstr/internal/auth"
 	"rgstr/internal/config"
+	"rgstr/internal/ops"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
 	"rgstr/internal/ui"
@@ -49,11 +50,12 @@ type Registry struct {
 	cfg         *config.Config
 	counter     *stats.Counter
 	authHandler *auth.Handler
+	ops         *ops.Ops
 }
 
 // New creates a Registry.
 func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Config, counter *stats.Counter) *Registry {
-	return &Registry{store: store, tokenSvc: tokenSvc, cfg: cfg, counter: counter}
+	return &Registry{store: store, tokenSvc: tokenSvc, cfg: cfg, counter: counter, ops: ops.New(store)}
 }
 
 // Mount registers the registry handler on mux. The auth middleware is always
@@ -73,7 +75,7 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 
 	mux.HandleFunc("/stats", reg.handleStats)
 
-	ui.New(reg.authHandler, reg.store, reg.counter).Mount(mux)
+	ui.New(reg.authHandler, reg.store, reg.counter, reg.ops).Mount(mux)
 }
 
 // dispatch is the central router.
@@ -538,9 +540,18 @@ func (reg *Registry) handlePutManifest(w http.ResponseWriter, r *http.Request, r
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (reg *Registry) handleDeleteManifest(w http.ResponseWriter, _ *http.Request, repo, reference string) {
-	if err := reg.store.DeleteManifest(repo, reference); err != nil {
-		if errors.Is(err, storage.ErrManifestNotFound) {
+// handleDeleteManifest deletes by tag (only that tag) or by digest (the
+// manifest and every tag pointing to it).
+func (reg *Registry) handleDeleteManifest(w http.ResponseWriter, r *http.Request, repo, reference string) {
+	actor := ops.ActorFrom(r, auth.SubjectFromCtx(r.Context()))
+	var err error
+	if d := storage.Digest(reference); d.Valid() {
+		_, err = reg.ops.DeleteImage(actor, repo, d)
+	} else {
+		err = reg.ops.DeleteTag(actor, repo, reference)
+	}
+	if err != nil {
+		if errors.Is(err, ops.ErrNotFound) {
 			writeError(w, http.StatusNotFound, CodeManifestUnknown, "manifest unknown", nil)
 			return
 		}

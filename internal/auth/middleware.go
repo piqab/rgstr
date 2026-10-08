@@ -71,7 +71,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	subject, access, ok := h.Authenticate(r)
 	if ok {
 		typ, name, action := requiredAccess(r)
-		if typ == "" || Allowed(access, typ, name, action) {
+		// The token must grant the action, and the subject must still be
+		// allowed it now — role changes apply without waiting for expiry.
+		if typ == "" || (Allowed(access, typ, name, action) &&
+			(typ != "repository" || h.Can(subject, name, action))) {
 			ctx := context.WithValue(r.Context(), ctxSubject, subject)
 			ctx = context.WithValue(ctx, ctxAccess, access)
 			h.inner.ServeHTTP(w, r.WithContext(ctx))
@@ -274,6 +277,30 @@ func (h *Handler) ChangePassword(username, current, next string) error {
 func (h *Handler) AuthEnabled() bool { return h.cfg.AuthEnabled }
 
 // ─── Roles ───────────────────────────────────────────────────────────────────
+
+// Can reports whether subject ("" = anonymous) may perform action (pull,
+// push, delete) on repo right now.
+func (h *Handler) Can(subject, repo, action string) bool {
+	if !h.cfg.AuthEnabled {
+		return true
+	}
+	if action == "pull" && h.isPublicRepo(repo) {
+		return true
+	}
+	if subject == "" {
+		return false
+	}
+	return contains(h.UserActions(subject), action)
+}
+
+// IsAdmin reports whether subject may administer the registry: manage
+// users, policies and GC. Everyone is an admin when auth is disabled.
+func (h *Handler) IsAdmin(subject string) bool {
+	if !h.cfg.AuthEnabled {
+		return true
+	}
+	return subject != "" && (contains(h.cfg.Admins, subject) || h.creds.isBootstrap(subject))
+}
 
 var allActions = []string{"pull", "push", "delete"}
 

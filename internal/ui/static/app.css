@@ -1,0 +1,107 @@
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222;font-size:15px}
+a{color:#1a1a2e}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ── Header and navigation ─────────────────────────────────────────────── */
+header{background:#1a1a2e;color:#fff;padding:0 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;min-height:52px}
+header h1{font-size:1.15rem;font-weight:600;letter-spacing:.05em}
+header h1 a{color:#fff;text-decoration:none}
+nav{display:flex;gap:2px;flex-wrap:wrap}
+nav a{color:rgba(255,255,255,.7);text-decoration:none;padding:16px 12px 14px;font-size:.88rem;border-bottom:2px solid transparent}
+nav a:hover{color:#fff}
+nav a.active{color:#fff;border-bottom-color:#7c83fd}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+#hdr-user{font-size:.82rem;opacity:.7}
+.hdr-btn{display:none;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:.82rem}
+.hdr-btn:hover{background:rgba(255,255,255,.25)}
+
+main{max-width:1150px;margin:0 auto;padding:24px;display:none}
+h2.page{font-size:1.2rem;margin-bottom:16px}
+h3{font-size:1rem;margin:20px 0 10px}
+.muted{color:#888}
+.small{font-size:.8rem}
+
+/* ── Overlays and dialogs ──────────────────────────────────────────────── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:100;padding:16px}
+.overlay.show{display:flex}
+.dialog{background:#fff;border-radius:8px;padding:28px;width:340px;max-width:100%;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 4px 24px rgba(0,0,0,.2)}
+.dialog-wide{width:760px}
+.dialog h2{margin-bottom:18px;font-size:1.1rem}
+.dialog label,.form label{display:block;font-size:.85rem;margin-bottom:4px;color:#555}
+.dialog input,.dialog select,.dialog textarea,.form input,.form select,.form textarea{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:.92rem;margin-bottom:14px;font-family:inherit;background:#fff}
+.dialog input[type=checkbox],.form input[type=checkbox]{width:auto;margin:0 6px 0 0}
+.dialog .note{font-size:.84rem;color:#666;margin:-6px 0 16px;line-height:1.45}
+.err{color:#c00;font-size:.84rem;margin-top:10px;display:none}
+.check{display:flex!important;align-items:center;margin-bottom:14px!important;color:#333!important}
+.dialog-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:7px 14px;border:1px solid #ddd;border-radius:4px;background:#fff;color:#333;cursor:pointer;font-size:.88rem;white-space:nowrap;text-decoration:none}
+.btn:hover{background:#f6f6f8}
+.btn:disabled{opacity:.5;cursor:default}
+.btn-primary{background:#1a1a2e;border-color:#1a1a2e;color:#fff}
+.btn-primary:hover{background:#2a2a4e}
+.btn-danger{color:#c00}
+.btn-danger:hover{background:#fff0f0;border-color:#c00}
+.btn-danger-solid{background:#c00;border-color:#c00;color:#fff}
+.btn-danger-solid:hover{background:#a00}
+.btn-sm{padding:3px 9px;font-size:.78rem}
+.btn-block{width:100%;margin-top:6px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.toolbar .grow{flex:1}
+
+/* ── Cards, stats, tables ──────────────────────────────────────────────── */
+.stats-bar{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.stat-card{background:#fff;border-radius:8px;padding:16px 24px;flex:1;min-width:140px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.stat-card .val{font-size:1.8rem;font-weight:700;color:#1a1a2e}
+.stat-card .lbl{font-size:.8rem;color:#888;margin-top:2px}
+.card{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);padding:18px;margin-bottom:16px}
+table.tbl{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:.86rem}
+.tbl th{text-align:left;font-weight:600;color:#666;font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;padding:10px 12px;border-bottom:1px solid #eee;background:#fafafa}
+.tbl td{padding:9px 12px;border-bottom:1px solid #f3f3f3;vertical-align:top}
+.tbl tr:last-child td{border-bottom:none}
+.tbl .actions{text-align:right;white-space:nowrap}
+.tbl-wrap{overflow-x:auto}
+.badge{display:inline-block;font-size:.72rem;background:#f0f0f5;color:#444;border-radius:3px;padding:2px 6px;white-space:nowrap}
+.badge-ok{background:#e6f6ea;color:#1b7a34}
+.badge-warn{background:#fff4e0;color:#9a5b00}
+.badge-err{background:#fde8e8;color:#b00}
+.badge-blue{background:#e8ecff;color:#3740b0}
+.empty{color:#aaa;font-size:.88rem;padding:12px 0}
+.loading{color:#999;font-size:.9rem;padding:16px 0}
+input.search{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:6px;font-size:.9rem}
+
+/* ── Repositories ──────────────────────────────────────────────────────── */
+.repo-grid{display:flex;flex-direction:column;gap:12px}
+.repo-card{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
+.repo-header{padding:14px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+.repo-header:hover{background:#fafafa}
+.repo-name{font-weight:600;font-size:.95rem;flex:1;word-break:break-all}
+.repo-meta{font-size:.82rem;color:#888;white-space:nowrap}
+.repo-arrow{transition:transform .2s;font-size:.8rem;color:#aaa}
+.repo-card.open .repo-arrow{transform:rotate(90deg)}
+.repo-body{display:none;border-top:1px solid #f0f0f0;padding:10px 18px 14px}
+.repo-card.open .repo-body{display:block}
+.repo-tools{display:flex;align-items:center;gap:10px;padding:4px 0 8px;border-bottom:1px solid #f5f5f5;font-size:.84rem}
+.tag-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:8px 0;border-bottom:1px solid #f5f5f5}
+.tag-row:last-child{border:none}
+.tag-name{font-family:ui-monospace,monospace;font-size:.88rem;min-width:110px}
+.tag-name a{text-decoration:none}
+.tag-name a:hover{text-decoration:underline}
+.tag-digest{font-family:ui-monospace,monospace;font-size:.75rem;color:#999}
+.tag-same{font-size:.75rem;color:#aaa}
+.platforms{display:flex;flex-wrap:wrap;gap:4px;flex:1}
+.tag-size,.tag-time{font-size:.78rem;color:#888;white-space:nowrap}
+.tag-err{font-size:.78rem;color:#c00;flex:1}
+
+#toast{position:fixed;bottom:24px;right:24px;background:#222;color:#fff;padding:10px 18px;border-radius:6px;font-size:.88rem;opacity:0;transition:opacity .3s;pointer-events:none;z-index:200;max-width:calc(100% - 48px)}
+#toast.show{opacity:1}
+
+@media (max-width:700px){
+  header{padding:0 16px}
+  main{padding:16px}
+  .stats-bar{gap:8px}
+  .stat-card{padding:12px 16px}
+  nav a{padding:12px 8px 10px}
+}

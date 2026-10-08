@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -580,5 +581,32 @@ func TestGCKeepsBlobUsedByOtherRepo(t *testing.T) {
 	}
 	if _, err := fs.StatBlob(layer); err != nil {
 		t.Errorf("layer still used by repo b was GC'd: %v", err)
+	}
+}
+
+func TestDeleteRepositoryKeepsNested(t *testing.T) {
+	fs := newTestFS(t)
+	putImage(t, fs, "team", "latest", []byte("parent"))
+	putImage(t, fs, "team/app", "latest", []byte("nested"))
+
+	if err := fs.DeleteRepository("team"); err != nil {
+		t.Fatalf("DeleteRepository: %v", err)
+	}
+	repos, _ := fs.ListRepositories()
+	if len(repos) != 1 || repos[0] != "team/app" {
+		t.Errorf("repositories after delete: got %v want [team/app]", repos)
+	}
+	if _, err := fs.GetManifest("team/app", "latest"); err != nil {
+		t.Errorf("nested repo manifest: %v", err)
+	}
+	if err := fs.DeleteRepository("team"); err != ErrRepoNotFound {
+		t.Errorf("second delete: got %v want ErrRepoNotFound", err)
+	}
+
+	if err := fs.DeleteRepository("team/app"); err != nil {
+		t.Fatalf("DeleteRepository nested: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(fs.root, "repositories")); len(entries) != 0 {
+		t.Errorf("empty directories left behind: %v", entries)
 	}
 }

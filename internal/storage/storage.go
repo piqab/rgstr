@@ -37,6 +37,7 @@ var (
 	ErrBlobNotFound    = errors.New("blob not found")
 	ErrManifestNotFound = errors.New("manifest not found")
 	ErrUploadNotFound  = errors.New("upload not found")
+	ErrRepoNotFound    = errors.New("repository not found")
 )
 
 // RangeError is returned when a PATCH chunk has an unexpected start offset.
@@ -671,6 +672,76 @@ func (fs *Filesystem) ListTags(repo string) ([]string, error) {
 		}
 	}
 	return tags, nil
+}
+
+// TagInfo is a tag pointer: the manifest it points to and when it was pushed.
+type TagInfo struct {
+	Name     string
+	Digest   Digest
+	PushedAt time.Time
+}
+
+// RepoTags returns every tag of repo with its digest and push time (the tag
+// file's mtime, set on every push of the tag).
+func (fs *Filesystem) RepoTags(repo string) ([]TagInfo, error) {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+
+	tagsDir := filepath.Join(fs.repoBase(repo), "manifests", "tags")
+	entries, err := os.ReadDir(tagsDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []TagInfo
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(tagsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, TagInfo{
+			Name:     e.Name(),
+			Digest:   DigestFromHex(strings.TrimSpace(string(b))),
+			PushedAt: info.ModTime(),
+		})
+	}
+	return out, nil
+}
+
+// DeleteRepository removes repo's manifests, tags and blob links. Nested
+// repositories (repo/sub) live in subdirectories and are left untouched.
+// Blob data is removed later by GC once nothing references it.
+func (fs *Filesystem) DeleteRepository(repo string) error {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+
+	base := fs.repoBase(repo)
+	if _, err := os.Stat(filepath.Join(base, "manifests")); os.IsNotExist(err) {
+		return ErrRepoNotFound
+	}
+	for _, sub := range []string{"manifests", "layers"} {
+		if err := os.RemoveAll(filepath.Join(base, sub)); err != nil {
+			return err
+		}
+	}
+	// Remove now-empty directories up to repositories/, keeping parents
+	// that still hold nested repositories.
+	reposDir := filepath.Join(fs.root, "repositories")
+	for dir := base; dir != reposDir && strings.HasPrefix(dir, reposDir); dir = filepath.Dir(dir) {
+		if os.Remove(dir) != nil {
+			break
+		}
+	}
+	return nil
 }
 
 // ListRepositories returns all known repository names.

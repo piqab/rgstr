@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rgstr</title>
+<link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body>
+
+<div class="overlay" id="login-overlay">
+  <form class="dialog" id="login-form">
+    <h2 data-t="login.title">rgstr — sign in</h2>
+    <label for="li-user" data-t="login.username">Username</label>
+    <input id="li-user" type="text" autocomplete="username" required>
+    <label for="li-pass" data-t="login.password">Password</label>
+    <input id="li-pass" type="password" autocomplete="current-password" required>
+    <button type="submit" class="btn btn-primary btn-block" data-t="login.submit">Sign in</button>
+    <div class="err" id="li-err"></div>
+  </form>
+</div>
+
+<div class="overlay" id="pw-overlay">
+  <form class="dialog" id="pw-form">
+    <h2 id="pw-title"></h2>
+    <p class="note" id="pw-note"></p>
+    <div id="pw-current-wrap">
+      <label for="pw-current" data-t="pw.current">Current password</label>
+      <input id="pw-current" type="password" autocomplete="current-password">
+    </div>
+    <label for="pw-new" data-t="pw.new">New password</label>
+    <input id="pw-new" type="password" autocomplete="new-password" minlength="8" required>
+    <label for="pw-repeat" data-t="pw.repeat">Repeat new password</label>
+    <input id="pw-repeat" type="password" autocomplete="new-password" minlength="8" required>
+    <button type="submit" class="btn btn-primary btn-block" data-t="pw.save">Save password</button>
+    <button type="button" class="btn btn-block" id="pw-cancel" data-t="common.cancel">Cancel</button>
+    <div class="err" id="pw-err"></div>
+  </form>
+</div>
+
+<div class="overlay" id="modal-overlay">
+  <div class="dialog dialog-wide" id="modal"></div>
+</div>
+
+<header>
+  <h1><a href="#repos">rgstr</a></h1>
+  <nav id="nav"></nav>
+  <div class="hdr-right">
+    <span id="hdr-user"></span>
+    <button class="hdr-btn" id="btn-password" data-t="hdr.password">Change password</button>
+    <button class="hdr-btn" id="btn-logout" data-t="hdr.logout">Sign out</button>
+  </div>
+</header>
+
+<main id="app"></main>
+
+<div id="toast"></div>
+
+<script src="/ui/static/core.js"></script>
+<script src="/ui/static/repos.js"></script>
+<script>App.boot();</script>
+</body>
+</html>
