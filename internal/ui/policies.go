@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"fmt"
 	"net/http"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/meta"
 	"rgstr/internal/policy"
 )
@@ -46,7 +48,8 @@ func (h *Handler) handleRetentionRules(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodPost) {
 		return
 	}
-	if _, ok := h.adminSession(w, r); !ok {
+	user, ok := h.adminSession(w, r)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -59,7 +62,9 @@ func (h *Handler) handleRetentionRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.meta.Update(func(d *meta.Data) error { d.Retention = req.Rules; return nil }); err != nil {
+	err := h.meta.Update(func(d *meta.Data) error { d.Retention = req.Rules; return nil })
+	h.audit(r, user, audit.PolicyChange, "retention", fmt.Sprintf("%d rule(s)", len(req.Rules)), err)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -71,7 +76,8 @@ func (h *Handler) handleImmutableRules(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodPost) {
 		return
 	}
-	if _, ok := h.adminSession(w, r); !ok {
+	user, ok := h.adminSession(w, r)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -84,7 +90,9 @@ func (h *Handler) handleImmutableRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.meta.Update(func(d *meta.Data) error { d.Immutable = req.Rules; return nil }); err != nil {
+	err := h.meta.Update(func(d *meta.Data) error { d.Immutable = req.Rules; return nil })
+	h.audit(r, user, audit.PolicyChange, "immutable", fmt.Sprintf("%d rule(s)", len(req.Rules)), err)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

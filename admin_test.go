@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -242,5 +243,55 @@ func TestUIUserManagement(t *testing.T) {
 	}
 	if code := status(t, "POST", srv.URL+"/v2/x/blobs/uploads/", carol); code != http.StatusForbidden {
 		t.Errorf("carol push: got %d want 403", code)
+	}
+}
+
+func TestAuditLog(t *testing.T) {
+	srv := newAuthTestServer(t)
+	alice := map[string]string{"Authorization": "Basic YWxpY2U6c2VjcmV0"}
+	bob := map[string]string{"Authorization": "Basic Ym9iOnNlY3JldA=="}
+
+	start := do(t, "POST", srv.URL+"/v2/app/blobs/uploads/", nil, alice)
+	start.Body.Close()
+	m := []byte(`{"schemaVersion":2,"layers":[]}`)
+	put := do(t, "PUT", srv.URL+"/v2/app/manifests/v1", m, map[string]string{
+		"Authorization": alice["Authorization"], "Content-Type": "application/vnd.oci.image.manifest.v1+json"})
+	put.Body.Close()
+	status(t, "GET", srv.URL+"/v2/app/manifests/v1", bob)
+	status(t, "DELETE", srv.URL+"/v2/app/manifests/v1", alice)
+	// failed docker login and failed UI login
+	bad := do(t, "GET", srv.URL+"/v2/auth?service=test", nil, map[string]string{"Authorization": "Basic Ym9iOndyb25n"}) // bob:wrong
+	bad.Body.Close()
+	postJSON(t, srv.URL+"/ui/api/login", `{"username":"mallory","password":"x"}`, nil).Body.Close()
+
+	if code := status(t, "GET", srv.URL+"/ui/api/audit", bob); code != http.StatusForbidden {
+		t.Errorf("non-admin audit: got %d want 403", code)
+	}
+	resp := do(t, "GET", srv.URL+"/ui/api/audit", nil, alice)
+	var res struct {
+		Entries []struct {
+			User, Action, Resource, Detail string
+		} `json:"entries"`
+	}
+	json.NewDecoder(resp.Body).Decode(&res)
+	resp.Body.Close()
+	var got []string
+	for _, e := range res.Entries {
+		got = append(got, e.User+" "+e.Action+" "+e.Resource+" "+e.Detail)
+	}
+	want := []string{
+		"mallory login_failed  web admin",
+		"bob login_failed  docker",
+		"alice delete_tag app:v1 ",
+		"bob pull app:v1 sha256:",
+		"alice push app:v1 sha256:",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("entries:\n%s", strings.Join(got, "\n"))
+	}
+	for i := range want {
+		if !strings.HasPrefix(got[i], want[i]) {
+			t.Errorf("entry %d: got %q want prefix %q", i, got[i], want[i])
+		}
 	}
 }

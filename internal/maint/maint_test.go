@@ -21,7 +21,7 @@ func newRunner(t *testing.T) *Runner {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, store, m, ops.New(store, m))
+	return New(cfg, store, m, ops.New(store, m, nil))
 }
 
 func TestIntervalOverride(t *testing.T) {

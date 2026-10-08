@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/auth"
 )
 
@@ -50,7 +51,7 @@ type userRequest struct {
 }
 
 // userAction runs fn for an administrator, with the request decoded.
-func (h *Handler) userAction(w http.ResponseWriter, r *http.Request, fn func(me string, req userRequest) error) {
+func (h *Handler) userAction(w http.ResponseWriter, r *http.Request, action string, fn func(me string, req userRequest) error) {
 	if !method(w, r, http.MethodPost) {
 		return
 	}
@@ -66,7 +67,13 @@ func (h *Handler) userAction(w http.ResponseWriter, r *http.Request, fn func(me 
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := fn(me, req); err != nil {
+	err := fn(me, req)
+	detail := ""
+	if req.Role != "" {
+		detail = "role: " + req.Role
+	}
+	h.audit(r, me, action, req.Name, detail, err)
+	if err != nil {
 		userError(w, err)
 		return
 	}
@@ -76,13 +83,13 @@ func (h *Handler) userAction(w http.ResponseWriter, r *http.Request, fn func(me 
 var errSelf = errors.New("you cannot do this to your own account")
 
 func (h *Handler) handleUserCreate(w http.ResponseWriter, r *http.Request) {
-	h.userAction(w, r, func(_ string, req userRequest) error {
+	h.userAction(w, r, audit.UserCreate, func(_ string, req userRequest) error {
 		return h.auth.CreateUser(req.Name, req.Role, req.Password, req.MustChange)
 	})
 }
 
 func (h *Handler) handleUserRole(w http.ResponseWriter, r *http.Request) {
-	h.userAction(w, r, func(me string, req userRequest) error {
+	h.userAction(w, r, audit.UserRole, func(me string, req userRequest) error {
 		if req.Name == me {
 			return errSelf
 		}
@@ -91,13 +98,13 @@ func (h *Handler) handleUserRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleUserPassword(w http.ResponseWriter, r *http.Request) {
-	h.userAction(w, r, func(_ string, req userRequest) error {
+	h.userAction(w, r, audit.UserPassword, func(_ string, req userRequest) error {
 		return h.auth.ResetPassword(req.Name, req.Password, req.MustChange)
 	})
 }
 
 func (h *Handler) handleUserDelete(w http.ResponseWriter, r *http.Request) {
-	h.userAction(w, r, func(me string, req userRequest) error {
+	h.userAction(w, r, audit.UserDelete, func(me string, req userRequest) error {
 		if req.Name == me {
 			return errSelf
 		}

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/maint"
 	"rgstr/internal/meta"
 	"rgstr/internal/storage"
@@ -83,7 +84,8 @@ func (h *Handler) handleGCSettings(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodPost) {
 		return
 	}
-	if _, ok := h.adminSession(w, r); !ok {
+	user, ok := h.adminSession(w, r)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -92,7 +94,13 @@ func (h *Handler) handleGCSettings(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := h.maint.SetInterval(req.Interval); err != nil {
+	err := h.maint.SetInterval(req.Interval)
+	detail := "interval: " + req.Interval
+	if req.Interval == "" {
+		detail = "interval: env default"
+	}
+	h.audit(r, user, audit.GCSettings, "", detail, err)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

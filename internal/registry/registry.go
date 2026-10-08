@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/auth"
 	"rgstr/internal/config"
 	"rgstr/internal/maint"
@@ -64,7 +65,11 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 	if err != nil {
 		log.Fatalf("metadata: %v", err)
 	}
-	o := ops.New(store, m)
+	alog, err := audit.Open(cfg.StorageRoot)
+	if err != nil {
+		log.Fatalf("audit log: %v", err)
+	}
+	o := ops.New(store, m, alog)
 	return &Registry{
 		store:    store,
 		tokenSvc: tokenSvc,
@@ -81,6 +86,7 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 func (reg *Registry) Mount(mux *http.ServeMux) {
 	inner := http.HandlerFunc(reg.dispatch)
 	reg.authHandler = auth.NewHandler(reg.cfg, reg.tokenSvc, inner)
+	reg.authHandler.SetAudit(reg.ops.AuditLog())
 	mux.Handle("/v2/", reg.authHandler)
 
 	// /healthz is intentionally unauthenticated — used by load balancers and
@@ -531,6 +537,7 @@ func (reg *Registry) handleGetManifest(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	reg.counter.RecordPull(repo)
+	reg.ops.RecordPull(ops.ActorFrom(r, auth.SubjectFromCtx(r.Context())), repo, reference, mf.Digest)
 	w.Header().Set("Content-Type", mf.ContentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(mf.Content)))
 	w.Header().Set("Docker-Content-Digest", string(mf.Digest))

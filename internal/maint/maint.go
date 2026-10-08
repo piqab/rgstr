@@ -5,10 +5,12 @@ package maint
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/config"
 	"rgstr/internal/meta"
 	"rgstr/internal/ops"
@@ -157,6 +159,7 @@ func (r *Runner) Run(trigger, user string, opts storage.GCOptions) (meta.GCRun, 
 		run.Error = err.Error()
 	}
 
+	r.ops.Audit(actor(user), audit.GCRun, "", gcDetail(run), err)
 	if serr := r.meta.Update(func(d *meta.Data) error {
 		d.GCHistory = append([]meta.GCRun{run}, d.GCHistory...)
 		if len(d.GCHistory) > meta.MaxGCHistory {
@@ -181,7 +184,12 @@ func (r *Runner) RunRetention(trigger, user string, dryRun bool) (meta.Retention
 	if rules == 0 {
 		return run, nil
 	}
-	tags, err := r.ops.ApplyRetention(ops.Actor{Name: user}, dryRun)
+	tags, err := r.ops.ApplyRetention(actor(user), dryRun)
+	detail := fmt.Sprintf("%d tag(s)", len(tags))
+	if dryRun {
+		detail += ", dry run"
+	}
+	r.ops.Audit(actor(user), audit.RetentionRun, "", detail, err)
 	run.DurationMs = time.Since(run.Start).Milliseconds()
 	run.TagsCount = len(tags)
 	if len(tags) > MaxRetentionListed {
@@ -201,4 +209,23 @@ func (r *Runner) RunRetention(trigger, user string, dryRun bool) (meta.Retention
 		log.Printf("retention: save history: %v", serr)
 	}
 	return run, err
+}
+
+// actor is the user who started a run, or the system for scheduled runs.
+func actor(user string) ops.Actor {
+	if user == "" {
+		return ops.System
+	}
+	return ops.Actor{Name: user}
+}
+
+func gcDetail(r meta.GCRun) string {
+	d := fmt.Sprintf("freed %d bytes, %d blob(s), %d image(s)", r.BytesFreed, r.BlobsRemoved, r.ManifestsRemoved)
+	if r.DryRun {
+		d += ", dry run"
+	}
+	if r.IgnoreGrace {
+		d += ", no grace period"
+	}
+	return d
 }

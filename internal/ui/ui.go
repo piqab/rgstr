@@ -76,6 +76,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/users/role", h.handleUserRole)
 	mux.HandleFunc("/ui/api/users/password", h.handleUserPassword)
 	mux.HandleFunc("/ui/api/users/delete", h.handleUserDelete)
+
+	mux.HandleFunc("/ui/api/audit", h.handleAudit)
 }
 
 // servePage serves the app shell; navigation happens client-side (#hash).
@@ -155,4 +157,9 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// audit records an admin action by user.
+func (h *Handler) audit(r *http.Request, user, action, resource, detail string, err error) {
+	h.ops.Audit(ops.ActorFrom(r, user), action, resource, detail, err)
 }

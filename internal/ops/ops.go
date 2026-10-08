@@ -8,12 +8,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/meta"
 	"rgstr/internal/policy"
 	"rgstr/internal/storage"
@@ -37,12 +37,26 @@ func (a Actor) DisplayName() string {
 type Ops struct {
 	store *storage.Filesystem
 	meta  *meta.Store
+	audit *audit.Log
 }
 
-// New creates Ops over store, with policies from m.
-func New(store *storage.Filesystem, m *meta.Store) *Ops {
-	return &Ops{store: store, meta: m}
+// New creates Ops over store, with policies from m, recording to log
+// (nil disables auditing).
+func New(store *storage.Filesystem, m *meta.Store, log *audit.Log) *Ops {
+	return &Ops{store: store, meta: m, audit: log}
 }
+
+// Audit records an action by a.
+func (o *Ops) Audit(a Actor, action, resource, detail string, err error) {
+	e := audit.Entry{User: a.Name, IP: a.IP, Action: action, Resource: resource, Detail: detail}
+	if err != nil {
+		e.Error = err.Error()
+	}
+	o.audit.Add(e)
+}
+
+// AuditLog returns the audit log.
+func (o *Ops) AuditLog() *audit.Log { return o.audit }
 
 // Errors returned by operations.
 var (
@@ -75,20 +89,40 @@ func (o *Ops) immutableTags(repo string, tags []string) []string {
 
 // PutManifest stores a manifest under ref (tag or digest). Overwriting an
 // immutable tag with a different image is refused.
-func (o *Ops) PutManifest(a Actor, repo, ref string, m *storage.Manifest) error {
+func (o *Ops) PutManifest(a Actor, repo, ref string, m *storage.Manifest) (err error) {
+	sum := sha256.Sum256(m.Content)
+	digest := storage.DigestFromHex(hex.EncodeToString(sum[:]))
+	defer func() { o.Audit(a, audit.Push, refName(repo, ref), string(digest), err) }()
+
 	if d := storage.Digest(ref); !d.Valid() && o.IsImmutable(repo, ref) {
-		sum := sha256.Sum256(m.Content)
-		next := storage.DigestFromHex(hex.EncodeToString(sum[:]))
-		if cur, err := o.store.GetManifest(repo, ref); err == nil && cur.Digest != next {
+		if cur, err := o.store.GetManifest(repo, ref); err == nil && cur.Digest != digest {
 			return immutableErr(repo, []string{ref})
 		}
 	}
 	return o.store.PutManifest(repo, ref, m)
 }
 
+// RecordPull audits a manifest download.
+func (o *Ops) RecordPull(a Actor, repo, ref string, digest storage.Digest) {
+	o.Audit(a, audit.Pull, refName(repo, ref), string(digest), nil)
+}
+
+// refName formats repo:tag or repo@digest.
+func refName(repo, ref string) string {
+	if storage.Digest(ref).Valid() {
+		return repo + "@" + ref
+	}
+	return repo + ":" + ref
+}
+
 // DeleteTag removes one tag. The image stays available under its other
 // tags; GC removes its data once no tag references it.
-func (o *Ops) DeleteTag(a Actor, repo, tag string) error {
+func (o *Ops) DeleteTag(a Actor, repo, tag string) (err error) {
+	defer func() {
+		if !errors.Is(err, ErrNotFound) {
+			o.Audit(a, audit.DeleteTag, repo+":"+tag, "", err)
+		}
+	}()
 	tags, err := o.store.RepoTags(repo)
 	if err != nil {
 		return err
@@ -104,7 +138,16 @@ func (o *Ops) DeleteTag(a Actor, repo, tag string) error {
 
 // DeleteImage removes the manifest digest and every tag pointing to it.
 // Returns the removed tags.
-func (o *Ops) DeleteImage(a Actor, repo string, digest storage.Digest) ([]string, error) {
+func (o *Ops) DeleteImage(a Actor, repo string, digest storage.Digest) (removed []string, err error) {
+	defer func() {
+		if !errors.Is(err, ErrNotFound) {
+			detail := ""
+			if len(removed) > 0 {
+				detail = "tags: " + strings.Join(removed, ", ")
+			}
+			o.Audit(a, audit.DeleteImage, repo+"@"+string(digest), detail, err)
+		}
+	}()
 	if !digest.Valid() {
 		return nil, fmt.Errorf("invalid digest %q", digest)
 	}
@@ -118,7 +161,7 @@ func (o *Ops) DeleteImage(a Actor, repo string, digest storage.Digest) ([]string
 	if err != nil {
 		return nil, err
 	}
-	removed := tagsOf(tags, digest)
+	removed = tagsOf(tags, digest)
 	if locked := o.immutableTags(repo, removed); len(locked) > 0 {
 		return nil, immutableErr(repo, locked)
 	}
@@ -129,7 +172,12 @@ func (o *Ops) DeleteImage(a Actor, repo string, digest storage.Digest) ([]string
 }
 
 // DeleteRepository removes the repository with all its tags.
-func (o *Ops) DeleteRepository(a Actor, repo string) error {
+func (o *Ops) DeleteRepository(a Actor, repo string) (err error) {
+	defer func() {
+		if !errors.Is(err, ErrNotFound) {
+			o.Audit(a, audit.DeleteRepo, repo, "", err)
+		}
+	}()
 	tags, err := o.store.RepoTags(repo)
 	if err != nil {
 		return err
@@ -172,15 +220,11 @@ func tagsOf(tags []storage.TagInfo, digest storage.Digest) []string {
 // ActorFrom builds an Actor for an HTTP request made by name. Behind a
 // reverse proxy the first X-Forwarded-For address is used.
 func ActorFrom(r *http.Request, name string) Actor {
-	ip := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
-	}
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		ip = strings.TrimSpace(strings.Split(fwd, ",")[0])
-	}
-	return Actor{Name: name, IP: ip}
+	return Actor{Name: name, IP: audit.ClientIP(r)}
 }
+
+// System is the actor for scheduled jobs.
+var System = Actor{Name: "system"}
 
 // ApplyRetention deletes the tags that retention rules let go (or, for a
 // dry run, only lists them). Returns repo:tag entries, sorted.

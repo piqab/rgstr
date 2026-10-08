@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/auth"
 )
 
@@ -43,6 +44,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token, err := h.auth.Login(req.Username, req.Password)
+	if errors.Is(err, auth.ErrInvalidCredentials) {
+		h.audit(r, req.Username, audit.LoginFailed, "", "web admin", nil)
+	} else if err == nil {
+		h.audit(r, req.Username, audit.Login, "", "web admin", nil)
+	}
 	switch {
 	case errors.Is(err, auth.ErrPasswordChangeRequired):
 		// The UI then asks for a new password and calls /ui/api/password.
@@ -82,6 +88,11 @@ func (h *Handler) handlePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := h.auth.ChangePassword(req.Username, req.Password, req.NewPassword)
+	if errors.Is(err, auth.ErrInvalidCredentials) {
+		h.audit(r, req.Username, audit.LoginFailed, "", "password change", nil)
+	} else {
+		h.audit(r, req.Username, audit.PasswordChange, req.Username, "", err)
+	}
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, "current password is wrong")

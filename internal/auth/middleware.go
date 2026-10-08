@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"rgstr/internal/audit"
 	"rgstr/internal/config"
 	"rgstr/internal/glob"
 )
@@ -40,7 +41,11 @@ type Handler struct {
 	tokenSvc *TokenService
 	inner    http.Handler
 	creds    *credentials
+	audit    *audit.Log
 }
+
+// SetAudit makes the handler record failed docker logins in log.
+func (h *Handler) SetAudit(log *audit.Log) { h.audit = log }
 
 // NewHandler creates an auth handler that protects inner. It exits if the
 // stored passwords file (<storage>/users.json) exists but cannot be read.
@@ -160,6 +165,9 @@ func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	valid, mustChange := h.creds.check(username, password)
+	if h.cfg.AuthEnabled && username != "" && !valid {
+		h.audit.Add(audit.Entry{User: username, IP: audit.ClientIP(r), Action: audit.LoginFailed, Detail: "docker"})
+	}
 	if h.cfg.AuthEnabled && valid && mustChange {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
