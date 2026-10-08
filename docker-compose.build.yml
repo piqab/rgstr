@@ -1,0 +1,6 @@
+# Сборка образа из исходников вместо скачивания из GHCR:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  rgstr:
+    image: rgstr:local
+    build: .

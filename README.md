@@ -112,7 +112,15 @@ docker compose pull && docker compose up -d
 ```
 
 Обновление: `docker compose pull && docker compose up -d`.
-Собрать образ локально из исходников (в клоне репозитория): `docker compose up -d --build`.
+Собрать образ локально из исходников (в клоне репозитория), не скачивая из GHCR:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+Веб-интерфейс поднимается вместе с реестром: `http://<адрес>:5000/ui`.
+
+**Если `docker compose pull` / `up` пишет `unauthorized`** — Docker не может скачать образ: пакет в GHCR приватный (войдите через `docker login ghcr.io`, см. выше, или сделайте пакет публичным) либо образ этой версии ещё не опубликован (проверьте, что релизная сборка в GitHub Actions прошла, а тег `RGSTR_VERSION` существует).
 
 `docker compose` передаёт все переменные из `.env` в контейнер. `RGSTR_STORAGE` всегда переопределяется на `/data` (Docker volume).
 

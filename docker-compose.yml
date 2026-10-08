@@ -1,10 +1,10 @@
 services:
   rgstr:
-    # Готовый образ из GitHub Container Registry.
-    # Версию можно зафиксировать: RGSTR_VERSION=1.2.3 docker compose up -d
-    # Собрать локально из исходников: docker compose up -d --build
+    # Готовый образ из GitHub Container Registry — исходники не нужны.
+    # Версию можно зафиксировать: RGSTR_VERSION=1.2.3 в .env
+    # Собрать локально из исходников (в клоне репозитория):
+    #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
     image: ghcr.io/piqab/rgstr:${RGSTR_VERSION:-latest}
-    build: .
     container_name: rgstr
     restart: unless-stopped
     ports:
@@ -12,7 +12,9 @@ services:
     volumes:
       - rgstr-data:/data
     env_file:
-      - .env
+      # Без .env реестр стартует с настройками по умолчанию (без авторизации).
+      - path: .env
+        required: false
     environment:
       # Override storage path to the Docker volume mount point.
       # All other settings come from .env
