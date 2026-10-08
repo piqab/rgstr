@@ -34,6 +34,10 @@ const (
 	GCSettings     = "gc_settings"
 	RetentionRun   = "retention_run"
 	PolicyChange   = "policy_change"
+	ProjectCreate  = "project_create"
+	ProjectUpdate  = "project_update"
+	ProjectDelete  = "project_delete"
+	ProjectMember  = "project_member"
 )
 
 // Entry is one audit record.

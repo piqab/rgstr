@@ -79,6 +79,13 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/users/delete", h.handleUserDelete)
 
 	mux.HandleFunc("/ui/api/audit", h.handleAudit)
+
+	mux.HandleFunc("/ui/api/projects", h.handleProjects)
+	mux.HandleFunc("/ui/api/project", h.handleProject)
+	mux.HandleFunc("/ui/api/projects/create", h.handleProjectCreate)
+	mux.HandleFunc("/ui/api/projects/update", h.handleProjectUpdate)
+	mux.HandleFunc("/ui/api/projects/member", h.handleProjectMember)
+	mux.HandleFunc("/ui/api/projects/delete", h.handleProjectDelete)
 }
 
 // servePage serves the app shell; navigation happens client-side (#hash).

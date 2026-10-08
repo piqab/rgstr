@@ -13,8 +13,10 @@
 
   App.page('repos', {title: 'nav.repos', render});
 
-  async function render(el) {
+  // arg (from #repos/<name>) presets the filter and opens that repository.
+  async function render(el, arg) {
     root = el;
+    if (arg) { filter = arg; openRepos.add(arg); }
     const res = await App.api('/ui/api/repos');
     if (!res.ok) throw new Error(res.data.error || t('common.failed', {status: res.status}));
     allRepos = res.data.repositories;
@@ -37,7 +39,7 @@
   }
 
   async function reload() {
-    if (root && root.isConnected) await render(root);
+    if (root && root.isConnected) await render(root, '');
   }
 
   // ── Rendering ─────────────────────────────────────────────────────────────

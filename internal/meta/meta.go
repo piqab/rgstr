@@ -7,17 +7,79 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Data is everything stored in meta.json.
 type Data struct {
-	Settings         Settings        `json:"settings"`
-	GCHistory        []GCRun         `json:"gc_history,omitempty"`
-	Retention        []RetentionRule `json:"retention,omitempty"`
-	RetentionHistory []RetentionRun  `json:"retention_history,omitempty"`
-	Immutable        []ImmutableRule `json:"immutable,omitempty"`
+	Settings         Settings           `json:"settings"`
+	GCHistory        []GCRun            `json:"gc_history,omitempty"`
+	Retention        []RetentionRule    `json:"retention,omitempty"`
+	RetentionHistory []RetentionRun     `json:"retention_history,omitempty"`
+	Immutable        []ImmutableRule    `json:"immutable,omitempty"`
+	Projects         map[string]Project `json:"projects,omitempty"`
+}
+
+// Project roles.
+const (
+	ProjectAdmin      = "admin"      // everything, plus members and webhooks
+	ProjectMaintainer = "maintainer" // pull, push, delete
+	ProjectDeveloper  = "developer"  // pull, push
+	ProjectGuest      = "guest"      // pull
+)
+
+// Project groups the repositories whose name starts with "<name>/".
+type Project struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Public      bool              `json:"public"`            // anonymous pull
+	Members     map[string]string `json:"members,omitempty"` // user → project role
+	QuotaBytes  int64             `json:"quota_bytes,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+}
+
+// ProjectOf returns the project name a repository belongs to: its first
+// path segment, or "" for a repository without a slash.
+func ProjectOf(repo string) string {
+	if i := strings.IndexByte(repo, '/'); i > 0 {
+		return repo[:i]
+	}
+	return ""
+}
+
+// Project returns a copy of the named project.
+func (s *Store) Project(name string) (Project, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.data.Projects[name]
+	if ok {
+		p.Members = copyMap(p.Members)
+	}
+	return p, ok
+}
+
+// Projects returns copies of all projects, sorted by name.
+func (s *Store) Projects() []Project {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Project, 0, len(s.data.Projects))
+	for _, p := range s.data.Projects {
+		p.Members = copyMap(p.Members)
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func copyMap(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // RetentionRule keeps some tags of matching repositories and deletes the

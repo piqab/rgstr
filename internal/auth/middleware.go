@@ -13,6 +13,7 @@ import (
 	"rgstr/internal/audit"
 	"rgstr/internal/config"
 	"rgstr/internal/glob"
+	"rgstr/internal/meta"
 )
 
 type ctxKey int
@@ -42,7 +43,11 @@ type Handler struct {
 	inner    http.Handler
 	creds    *credentials
 	audit    *audit.Log
+	meta     *meta.Store // projects; nil = none
 }
+
+// SetMeta enables projects (membership and public flags) from m.
+func (h *Handler) SetMeta(m *meta.Store) { h.meta = m }
 
 // SetAudit makes the handler record failed docker logins in log.
 func (h *Handler) SetAudit(log *audit.Log) { h.audit = log }
@@ -289,6 +294,10 @@ func (h *Handler) AuthEnabled() bool { return h.cfg.AuthEnabled }
 // Can reports whether subject ("" = anonymous) may perform action (pull,
 // push, delete) on repo right now. Deleted users lose access immediately,
 // even with an unexpired token.
+//
+// Repositories inside a project ("<project>/…") are open to registry
+// admins and project members according to their project role; others use
+// the global role.
 func (h *Handler) Can(subject, repo, action string) bool {
 	if !h.cfg.AuthEnabled {
 		return true
@@ -299,7 +308,51 @@ func (h *Handler) Can(subject, repo, action string) bool {
 	if !h.creds.exists(subject) {
 		return false
 	}
+	if h.IsAdmin(subject) {
+		return true
+	}
+	if proj, ok := h.project(repo); ok {
+		return contains(projectActions(proj.Members[subject]), action)
+	}
 	return contains(h.UserActions(subject), action)
+}
+
+// project returns the project repo belongs to, if it exists.
+func (h *Handler) project(repo string) (meta.Project, bool) {
+	if h.meta == nil {
+		return meta.Project{}, false
+	}
+	name := meta.ProjectOf(repo)
+	if name == "" {
+		return meta.Project{}, false
+	}
+	return h.meta.Project(name)
+}
+
+// projectActions maps a project role to repository actions.
+func projectActions(role string) []string {
+	switch role {
+	case meta.ProjectAdmin, meta.ProjectMaintainer:
+		return allActions
+	case meta.ProjectDeveloper:
+		return []string{"pull", "push"}
+	case meta.ProjectGuest:
+		return []string{"pull"}
+	}
+	return nil
+}
+
+// IsProjectAdmin reports whether subject may manage the project's members
+// and webhooks: registry admins and the project's admins.
+func (h *Handler) IsProjectAdmin(subject, project string) bool {
+	if h.IsAdmin(subject) {
+		return true
+	}
+	if h.meta == nil || !h.creds.exists(subject) {
+		return false
+	}
+	p, ok := h.meta.Project(project)
+	return ok && p.Members[subject] == meta.ProjectAdmin
 }
 
 // IsAdmin reports whether subject may administer the registry: manage
@@ -349,25 +402,25 @@ func (h *Handler) UserActions(username string) []string {
 	return []string{"pull", "push"}
 }
 
-// FullAccess returns everything the user's role permits: their actions on
-// every repository plus the catalog.
+// FullAccess is the access of Basic auth and web admin sessions: the token
+// does not restrict anything, and every request is checked with Can.
 func (h *Handler) FullAccess(username string) []Access {
 	return []Access{
-		{Type: "repository", Name: "*", Actions: h.UserActions(username)},
+		{Type: "repository", Name: "*", Actions: []string{"*"}},
 		{Type: "registry", Name: "catalog", Actions: []string{"*"}},
 	}
 }
 
-// grantForUser narrows the requested access to what the user's role permits.
+// grantForUser narrows the requested access to what the user may do in
+// each requested repository.
 func (h *Handler) grantForUser(username string, requested []Access) []Access {
-	userActions := h.UserActions(username)
 	var granted []Access
 	for _, a := range requested {
 		switch {
 		case a.Type == "repository":
 			var acts []string
 			for _, act := range expandActions(a.Actions) {
-				if contains(userActions, act) {
+				if h.Can(username, a.Name, act) {
 					acts = append(acts, act)
 				}
 			}
@@ -417,8 +470,12 @@ func (h *Handler) isPublicReadRequest(r *http.Request) bool {
 	return repo != "" && h.isPublicRepo(repo)
 }
 
-// isPublicRepo reports whether name matches any of the configured public repo patterns.
+// isPublicRepo reports whether name is in a public project or matches one
+// of the RGSTR_PUBLIC_REPOS patterns.
 func (h *Handler) isPublicRepo(name string) bool {
+	if p, ok := h.project(name); ok && p.Public {
+		return true
+	}
 	for _, pattern := range h.cfg.PublicRepos {
 		if matchGlob(pattern, name) {
 			return true
@@ -599,3 +656,6 @@ func (h *Handler) ResetPassword(name, password string, mustChange bool) error {
 	}
 	return h.creds.setPassword(name, password, mustChange)
 }
+
+// UserExists reports whether name is a known user.
+func (h *Handler) UserExists(name string) bool { return h.creds.exists(name) }

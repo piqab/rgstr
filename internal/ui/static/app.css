@@ -123,3 +123,9 @@ a.badge:hover{background:#e4e4ee}
 .lang-links{margin-top:16px;text-align:center;font-size:.82rem;color:#aaa}
 .lang-links a{color:#888;text-decoration:none}
 .lang-links a.active{color:#1a1a2e;font-weight:600}
+
+/* ── Usage bars ────────────────────────────────────────────────────────── */
+.bar{height:6px;background:#eee;border-radius:3px;overflow:hidden;margin-top:4px;max-width:240px}
+.bar>div{height:100%;background:#4caf50}
+.bar.bar-warn>div{background:#f0a020}
+.bar.bar-err>div{background:#d33}

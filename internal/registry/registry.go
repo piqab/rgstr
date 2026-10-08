@@ -87,6 +87,7 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 	inner := http.HandlerFunc(reg.dispatch)
 	reg.authHandler = auth.NewHandler(reg.cfg, reg.tokenSvc, inner)
 	reg.authHandler.SetAudit(reg.ops.AuditLog())
+	reg.authHandler.SetMeta(reg.meta)
 	mux.Handle("/v2/", reg.authHandler)
 
 	// /healthz is intentionally unauthenticated — used by load balancers and
@@ -635,6 +636,7 @@ func (reg *Registry) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
+	repos = reg.visible(auth.SubjectFromCtx(r.Context()), repos)
 
 	repos = paginate(repos, r.URL.Query().Get("last"), queryInt(r, "n"))
 
@@ -703,8 +705,10 @@ func (reg *Registry) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	subject := ""
 	if reg.cfg.AuthEnabled {
-		_, access, ok := reg.authHandler.Authenticate(r)
+		sub, access, ok := reg.authHandler.Authenticate(r)
+		subject = sub
 		if !ok || !auth.Allowed(access, "registry", "catalog", "*") {
 			w.Header().Set("WWW-Authenticate", `Basic realm="rgstr"`)
 			w.Header().Set("Content-Type", "application/json")
@@ -720,6 +724,7 @@ func (reg *Registry) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	repos = reg.visible(subject, repos)
 	snap := reg.counter.Snapshot()
 	var totalPulls int64
 	repoStats := make([]repoStat, 0, len(repos))
@@ -749,4 +754,15 @@ var repoNameRe = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-
 
 func validRepoName(name string) bool {
 	return repoNameRe.MatchString(strings.ToLower(name))
+}
+
+// visible filters repos to those subject may pull.
+func (reg *Registry) visible(subject string, repos []string) []string {
+	out := repos[:0:0]
+	for _, repo := range repos {
+		if reg.authHandler.Can(subject, repo, "pull") {
+			out = append(out, repo)
+		}
+	}
+	return out
 }

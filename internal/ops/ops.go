@@ -261,3 +261,23 @@ func (o *Ops) ApplyRetention(a Actor, dryRun bool) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
+
+// ProjectUsage returns the bytes of data the project's repositories keep:
+// distinct blobs reachable from their tags.
+func (o *Ops) ProjectUsage(project string) int64 {
+	repos, err := o.store.ListRepositories()
+	if err != nil {
+		return 0
+	}
+	blobs := map[storage.Digest]int64{}
+	for _, repo := range repos {
+		if meta.ProjectOf(repo) == project {
+			o.store.ReachableBlobs(repo, blobs)
+		}
+	}
+	var total int64
+	for _, size := range blobs {
+		total += size
+	}
+	return total
+}

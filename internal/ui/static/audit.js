@@ -123,4 +123,8 @@ App.addLang('en', {
   'act.gc_settings': 'GC schedule',
   'act.retention_run': 'retention run',
   'act.policy_change': 'policy change',
+  'act.project_create': 'create project',
+  'act.project_update': 'update project',
+  'act.project_delete': 'delete project',
+  'act.project_member': 'project member',
 });

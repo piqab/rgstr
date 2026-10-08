@@ -892,3 +892,78 @@ func walkDigests(v interface{}, out *[]Digest) {
 		}
 	}
 }
+
+// ReachableBlobs adds to into every blob (with its size on disk) reachable
+// from repo's tags: configs and layers, following the platform manifests
+// of an index.
+func (fs *Filesystem) ReachableBlobs(repo string, into map[Digest]int64) {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+
+	tagsDir := filepath.Join(fs.repoBase(repo), "manifests", "tags")
+	entries, _ := os.ReadDir(tagsDir)
+	seen := map[string]bool{}
+	var stack []string
+	for _, e := range entries {
+		if b, err := os.ReadFile(filepath.Join(tagsDir, e.Name())); err == nil {
+			stack = append(stack, strings.TrimSpace(string(b)))
+		}
+	}
+	for len(stack) > 0 {
+		hexHash := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[hexHash] || len(hexHash) != 64 {
+			continue
+		}
+		seen[hexHash] = true
+		raw, err := os.ReadFile(fs.manifestDigestPath(repo, hexHash))
+		if err != nil {
+			continue
+		}
+		var mf manifestFile
+		if json.Unmarshal(raw, &mf) != nil {
+			continue
+		}
+		fs.addManifestBlobsLocked(repo, mf.Content, into, &stack)
+	}
+}
+
+// ManifestBlobs adds to into the blobs referenced by manifest content,
+// following platform manifests already stored in repo.
+func (fs *Filesystem) ManifestBlobs(repo string, content []byte, into map[Digest]int64) {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+	var stack []string
+	fs.addManifestBlobsLocked(repo, content, into, &stack)
+	seen := map[string]bool{}
+	for len(stack) > 0 {
+		hexHash := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[hexHash] {
+			continue
+		}
+		seen[hexHash] = true
+		raw, err := os.ReadFile(fs.manifestDigestPath(repo, hexHash))
+		if err != nil {
+			continue
+		}
+		var mf manifestFile
+		if json.Unmarshal(raw, &mf) == nil {
+			fs.addManifestBlobsLocked(repo, mf.Content, into, &stack)
+		}
+	}
+}
+
+// addManifestBlobsLocked records blobs referenced by content; digests that
+// name a manifest in repo are pushed onto stack instead.
+func (fs *Filesystem) addManifestBlobsLocked(repo string, content []byte, into map[Digest]int64, stack *[]string) {
+	for _, d := range extractDigests(content) {
+		if _, err := os.Stat(fs.manifestDigestPath(repo, d.Hex())); err == nil {
+			*stack = append(*stack, d.Hex())
+			continue
+		}
+		if info, err := fs.statBlobLocked(d); err == nil {
+			into[d] = info.Size
+		}
+	}
+}

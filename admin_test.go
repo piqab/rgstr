@@ -369,3 +369,84 @@ func TestUIImageRequiresPull(t *testing.T) {
 		t.Errorf("anonymous: got %d want 401", code)
 	}
 }
+
+func TestUIProjects(t *testing.T) {
+	srv := newAuthTestServer(t) // alice admin, bob user
+	alice := map[string]string{"Authorization": "Basic YWxpY2U6c2VjcmV0"}
+	bob := map[string]string{"Authorization": "Basic Ym9iOnNlY3JldA=="}
+
+	if r := postJSON(t, srv.URL+"/ui/api/projects/create", `{"name":"team"}`, bob); r.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin create: got %d want 403", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/projects/create", `{"name":"Bad Name"}`, alice); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad name: got %d want 400", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/projects/create", `{"name":"team"}`, alice); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("create: got %d", r.StatusCode)
+	}
+
+	// alice pushes into the project; bob (no member) cannot see or push.
+	m := []byte(`{"schemaVersion":2,"layers":[]}`)
+	ct := "application/vnd.oci.image.manifest.v1+json"
+	put := func(auth map[string]string) int {
+		h := map[string]string{"Content-Type": ct}
+		for k, v := range auth {
+			h[k] = v
+		}
+		r := do(t, "PUT", srv.URL+"/v2/team/app/manifests/1", m, h)
+		r.Body.Close()
+		return r.StatusCode
+	}
+	if code := put(alice); code != http.StatusCreated {
+		t.Fatalf("admin push: %d", code)
+	}
+	if code := put(bob); code != http.StatusForbidden {
+		t.Errorf("non-member push: got %d want 403", code)
+	}
+	catalog := func(auth map[string]string) string {
+		r := do(t, "GET", srv.URL+"/v2/_catalog", nil, auth)
+		var c struct{ Repositories []string }
+		json.NewDecoder(r.Body).Decode(&c)
+		r.Body.Close()
+		return strings.Join(c.Repositories, ",")
+	}
+	if got := catalog(bob); got != "" {
+		t.Errorf("non-member catalog: %q", got)
+	}
+
+	// Make bob a developer: he sees and can push, not delete.
+	if r := postJSON(t, srv.URL+"/ui/api/projects/member", `{"name":"team","user":"bob","role":"developer"}`, alice); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("add member: %d", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/projects/member", `{"name":"team","user":"ghost","role":"guest"}`, alice); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("unknown user: got %d want 400", r.StatusCode)
+	}
+	if got := catalog(bob); got != "team/app" {
+		t.Errorf("member catalog: %q", got)
+	}
+	if code := put(bob); code != http.StatusCreated {
+		t.Errorf("developer push: got %d", code)
+	}
+	if code := status(t, "DELETE", srv.URL+"/v2/team/app/manifests/1", bob); code != http.StatusForbidden {
+		t.Errorf("developer delete: got %d want 403", code)
+	}
+	// bob is not a project admin: cannot manage members.
+	if r := postJSON(t, srv.URL+"/ui/api/projects/member", `{"name":"team","user":"bob","role":"admin"}`, bob); r.StatusCode != http.StatusForbidden {
+		t.Errorf("developer manages members: got %d want 403", r.StatusCode)
+	}
+
+	// Public project: anonymous pull.
+	postJSON(t, srv.URL+"/ui/api/projects/update", `{"name":"team","public":true}`, alice).Body.Close()
+	if code := status(t, "GET", srv.URL+"/v2/team/app/manifests/1", nil); code != http.StatusOK {
+		t.Errorf("anonymous pull from public project: got %d", code)
+	}
+
+	// Deleting a project with repositories is refused.
+	if r := postJSON(t, srv.URL+"/ui/api/projects/delete", `{"name":"team"}`, alice); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("delete non-empty project: got %d want 400", r.StatusCode)
+	}
+	postJSON(t, srv.URL+"/ui/api/repos/delete", `{"repo":"team/app"}`, alice).Body.Close()
+	if r := postJSON(t, srv.URL+"/ui/api/projects/delete", `{"name":"team"}`, alice); r.StatusCode != http.StatusNoContent {
+		t.Errorf("delete empty project: got %d", r.StatusCode)
+	}
+}
