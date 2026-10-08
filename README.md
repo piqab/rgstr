@@ -356,6 +356,18 @@ echo "$ROBOT_SECRET" | docker login registry.example.com -u 'robot$ci' --passwor
 
 Роботы хранятся в `<RGSTR_STORAGE>/meta.json`.
 
+### Webhooks
+
+На странице «Webhooks» настраиваются HTTP-уведомления о событиях: push, pull, удаление, превышение квоты проекта.
+
+- **Область:** все репозитории (только администратор реестра) или один проект (администратор реестра или админ проекта).
+- **Формат:** JSON в стиле Harbor (`{"type":"PUSH_ARTIFACT","operator":…,"event_data":{"resources":[{"digest","tag","resource_url"}],"repository":{…}}}`) или Slack-совместимый `{"text": "alice pushed …"}` — его принимают входящие webhooks Slack и Mattermost.
+- Необязательный заголовок `Authorization` (в админке не показывается после сохранения), отключение проверки TLS-сертификата.
+- Отправка в фоне, до 3 попыток при ошибке; последние 20 отправок каждого webhook видны в админке (хранятся в памяти до перезапуска). Кнопка «Send test» отправляет тестовое событие.
+- Адрес реестра в ссылках на образы берётся из `RGSTR_AUTH_REALM`.
+
+Учтите: webhook заставляет сервер реестра отправлять запросы на указанный URL, в том числе во внутреннюю сеть. Права на создание webhooks есть только у администраторов реестра и админов проектов.
+
 ### Пользователи в админке
 
 На странице «Users» администратор может:
@@ -604,6 +616,10 @@ https://registry.example.com/ui
 | `POST` | `/ui/api/robots/update` | `{"name","description","permissions","expires_days","disabled"}` |
 | `POST` | `/ui/api/robots/secret` | `{"name"}` → новый `{"secret"}` |
 | `POST` | `/ui/api/robots/delete` | `{"name"}` |
+| `GET` | `/ui/api/webhooks` | Webhooks, которыми может управлять пользователь, и их последние отправки |
+| `POST` | `/ui/api/webhooks/save` | `{"id","name","url","project","events","format","auth_header","skip_verify","disabled"}`; без `id` — создать |
+| `POST` | `/ui/api/webhooks/delete` | `{"id"}` |
+| `POST` | `/ui/api/webhooks/test` | `{"id"}` — отправить тестовое событие |
 | `GET` | `/ui/api/audit` | Журнал: `?user=&action=&q=&before=&limit=` (администратор) |
 | `POST` | `/ui/api/gc/settings` | `{"interval":"6h"}` — расписание; `"0"` — выключить, `""` — значение из env (администратор) |
 

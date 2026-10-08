@@ -17,6 +17,7 @@ import (
 	"rgstr/internal/meta"
 	"rgstr/internal/policy"
 	"rgstr/internal/storage"
+	"rgstr/internal/webhook"
 )
 
 // Actor identifies who performs an operation.
@@ -38,6 +39,14 @@ type Ops struct {
 	store *storage.Filesystem
 	meta  *meta.Store
 	audit *audit.Log
+	hooks *webhook.Notifier
+}
+
+// SetNotifier sends registry events to webhooks through n.
+func (o *Ops) SetNotifier(n *webhook.Notifier) { o.hooks = n }
+
+func (o *Ops) notify(a Actor, typ, repo, tag string, digest storage.Digest, detail string) {
+	o.hooks.Notify(webhook.Event{Type: typ, Operator: a.Name, Repo: repo, Tag: tag, Digest: string(digest), Detail: detail})
 }
 
 // New creates Ops over store, with policies from m, recording to log
@@ -93,7 +102,19 @@ func (o *Ops) immutableTags(repo string, tags []string) []string {
 func (o *Ops) PutManifest(a Actor, repo, ref string, m *storage.Manifest) (err error) {
 	sum := sha256.Sum256(m.Content)
 	digest := storage.DigestFromHex(hex.EncodeToString(sum[:]))
-	defer func() { o.Audit(a, audit.Push, refName(repo, ref), string(digest), err) }()
+	defer func() {
+		o.Audit(a, audit.Push, refName(repo, ref), string(digest), err)
+		tag := ref
+		if storage.Digest(ref).Valid() {
+			tag = ""
+		}
+		switch {
+		case err == nil && tag != "":
+			o.notify(a, meta.EventPush, repo, tag, digest, "")
+		case errors.Is(err, ErrQuota):
+			o.notify(a, meta.EventQuotaExceeded, repo, tag, digest, err.Error())
+		}
+	}()
 
 	if d := storage.Digest(ref); !d.Valid() && o.IsImmutable(repo, ref) {
 		if cur, err := o.store.GetManifest(repo, ref); err == nil && cur.Digest != digest {
@@ -165,6 +186,11 @@ func humanBytes(b int64) string {
 // RecordPull audits a manifest download.
 func (o *Ops) RecordPull(a Actor, repo, ref string, digest storage.Digest) {
 	o.Audit(a, audit.Pull, refName(repo, ref), string(digest), nil)
+	tag := ref
+	if storage.Digest(ref).Valid() {
+		tag = ""
+	}
+	o.notify(a, meta.EventPull, repo, tag, digest, "")
 }
 
 // refName formats repo:tag or repo@digest.
@@ -181,6 +207,9 @@ func (o *Ops) DeleteTag(a Actor, repo, tag string) (err error) {
 	defer func() {
 		if !errors.Is(err, ErrNotFound) {
 			o.Audit(a, audit.DeleteTag, repo+":"+tag, "", err)
+		}
+		if err == nil {
+			o.notify(a, meta.EventDelete, repo, tag, "", "")
 		}
 	}()
 	tags, err := o.store.RepoTags(repo)
@@ -206,6 +235,9 @@ func (o *Ops) DeleteImage(a Actor, repo string, digest storage.Digest) (removed 
 				detail = "tags: " + strings.Join(removed, ", ")
 			}
 			o.Audit(a, audit.DeleteImage, repo+"@"+string(digest), detail, err)
+		}
+		if err == nil {
+			o.notify(a, meta.EventDelete, repo, "", digest, strings.Join(removed, ","))
 		}
 	}()
 	if !digest.Valid() {
@@ -236,6 +268,9 @@ func (o *Ops) DeleteRepository(a Actor, repo string) (err error) {
 	defer func() {
 		if !errors.Is(err, ErrNotFound) {
 			o.Audit(a, audit.DeleteRepo, repo, "", err)
+		}
+		if err == nil {
+			o.notify(a, meta.EventDelete, repo, "", "", "repository")
 		}
 	}()
 	tags, err := o.store.RepoTags(repo)

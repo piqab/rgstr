@@ -22,6 +22,30 @@ type Data struct {
 	Immutable        []ImmutableRule    `json:"immutable,omitempty"`
 	Projects         map[string]Project `json:"projects,omitempty"`
 	Robots           map[string]Robot   `json:"robots,omitempty"`
+	Webhooks         []Webhook          `json:"webhooks,omitempty"`
+}
+
+// Webhook events.
+const (
+	EventPush          = "push"
+	EventPull          = "pull"
+	EventDelete        = "delete"
+	EventQuotaExceeded = "quota_exceeded"
+)
+
+// Webhook notifies an HTTP endpoint about registry events.
+type Webhook struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	URL        string    `json:"url"`
+	Project    string    `json:"project,omitempty"` // "" = every repository
+	Events     []string  `json:"events"`
+	Format     string    `json:"format"`                // "default" (JSON) or "slack"
+	AuthHeader string    `json:"auth_header,omitempty"` // sent as Authorization
+	SkipVerify bool      `json:"skip_verify,omitempty"` // accept any TLS certificate
+	Disabled   bool      `json:"disabled,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	CreatedBy  string    `json:"created_by,omitempty"`
 }
 
 // RobotPrefix starts every robot account name.

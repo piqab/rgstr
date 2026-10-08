@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
 	"rgstr/internal/ui"
+	"rgstr/internal/webhook"
 )
 
 // ─── URL patterns ─────────────────────────────────────────────────────────────
@@ -57,6 +59,16 @@ type Registry struct {
 	ops         *ops.Ops
 	meta        *meta.Store
 	maint       *maint.Runner
+	hooks       *webhook.Notifier
+}
+
+// registryHost is how clients address the registry, taken from the token
+// realm URL (RGSTR_AUTH_REALM), for links in webhook events.
+func registryHost(cfg *config.Config) string {
+	if u, err := url.Parse(cfg.AuthRealm); err == nil {
+		return u.Host
+	}
+	return ""
 }
 
 // New creates a Registry.
@@ -70,6 +82,8 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 		log.Fatalf("audit log: %v", err)
 	}
 	o := ops.New(store, m, alog)
+	hooks := webhook.New(m, registryHost(cfg))
+	o.SetNotifier(hooks)
 	return &Registry{
 		store:    store,
 		tokenSvc: tokenSvc,
@@ -78,6 +92,7 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 		ops:      o,
 		meta:     m,
 		maint:    maint.New(cfg, store, m, o),
+		hooks:    hooks,
 	}
 }
 
@@ -107,6 +122,7 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 		Ops:     reg.ops,
 		Meta:    reg.meta,
 		Maint:   reg.maint,
+		Hooks:   reg.hooks,
 	}).Mount(mux)
 }
 

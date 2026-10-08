@@ -9,9 +9,10 @@ import (
 )
 
 type meResponse struct {
-	AuthEnabled bool   `json:"auth_enabled"`
-	User        string `json:"user,omitempty"`
-	Admin       bool   `json:"admin"`
+	AuthEnabled  bool   `json:"auth_enabled"`
+	User         string `json:"user,omitempty"`
+	Admin        bool   `json:"admin"`
+	ProjectAdmin bool   `json:"project_admin"` // manages at least one project
 }
 
 // handleMe reports whether auth is on and, if the request carries a valid
@@ -26,6 +27,7 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	} else if subject, _, ok := h.auth.Authenticate(r); ok && subject != "" {
 		resp.User = subject
 		resp.Admin = h.auth.IsAdmin(subject)
+		resp.ProjectAdmin = len(h.managedProjects(subject)) > 0
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -62,9 +64,10 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"token": token,
-		"user":  req.Username,
-		"admin": h.auth.IsAdmin(req.Username),
+		"token":         token,
+		"user":          req.Username,
+		"admin":         h.auth.IsAdmin(req.Username),
+		"project_admin": len(h.managedProjects(req.Username)) > 0,
 	})
 }
 

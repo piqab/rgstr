@@ -15,6 +15,7 @@ import (
 	"rgstr/internal/ops"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
+	"rgstr/internal/webhook"
 )
 
 //go:embed static
@@ -28,6 +29,7 @@ type Deps struct {
 	Ops     *ops.Ops
 	Meta    *meta.Store
 	Maint   *maint.Runner
+	Hooks   *webhook.Notifier
 }
 
 // Handler serves the web UI and its API.
@@ -38,11 +40,12 @@ type Handler struct {
 	ops     *ops.Ops
 	meta    *meta.Store
 	maint   *maint.Runner
+	hooks   *webhook.Notifier
 }
 
 // New creates a UI handler.
 func New(d Deps) *Handler {
-	return &Handler{auth: d.Auth, store: d.Store, counter: d.Counter, ops: d.Ops, meta: d.Meta, maint: d.Maint}
+	return &Handler{auth: d.Auth, store: d.Store, counter: d.Counter, ops: d.Ops, meta: d.Meta, maint: d.Maint, hooks: d.Hooks}
 }
 
 // Mount registers the UI handlers on mux.
@@ -92,6 +95,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/robots/update", h.handleRobotUpdate)
 	mux.HandleFunc("/ui/api/robots/secret", h.handleRobotSecret)
 	mux.HandleFunc("/ui/api/robots/delete", h.handleRobotDelete)
+
+	mux.HandleFunc("/ui/api/webhooks", h.handleWebhooks)
+	mux.HandleFunc("/ui/api/webhooks/save", h.handleWebhookSave)
+	mux.HandleFunc("/ui/api/webhooks/delete", h.handleWebhookDelete)
+	mux.HandleFunc("/ui/api/webhooks/test", h.handleWebhookTest)
 }
 
 // servePage serves the app shell; navigation happens client-side (#hash).

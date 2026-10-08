@@ -42,6 +42,8 @@ const (
 	RobotUpdate    = "robot_update"
 	RobotSecret    = "robot_secret"
 	RobotDelete    = "robot_delete"
+	WebhookChange  = "webhook_change"
+	WebhookDelete  = "webhook_delete"
 )
 
 // Entry is one audit record.

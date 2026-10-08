@@ -4,9 +4,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func postJSON(t *testing.T, url, body string, headers map[string]string) *http.Response {
@@ -549,5 +553,85 @@ func TestProjectQuota(t *testing.T) {
 	resp.Body.Close()
 	if res.Projects[0].Used != 26 {
 		t.Errorf("usage: %d want 26", res.Projects[0].Used)
+	}
+}
+
+func TestUIWebhooks(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	recv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b struct{ Type string }
+		json.NewDecoder(r.Body).Decode(&b)
+		mu.Lock()
+		events = append(events, b.Type)
+		mu.Unlock()
+	}))
+	defer recv.Close()
+
+	srv := newAuthTestServer(t)
+	alice := map[string]string{"Authorization": "Basic YWxpY2U6c2VjcmV0"}
+	bob := map[string]string{"Authorization": "Basic Ym9iOnNlY3JldA=="}
+	postJSON(t, srv.URL+"/ui/api/projects/create", `{"name":"team"}`, alice).Body.Close()
+	postJSON(t, srv.URL+"/ui/api/projects/member", `{"name":"team","user":"bob","role":"admin"}`, alice).Body.Close()
+
+	// bob (project admin) can add a hook for his project, not a global one.
+	if r := postJSON(t, srv.URL+"/ui/api/webhooks/save", `{"name":"g","url":"`+recv.URL+`","project":"","events":["push"]}`, bob); r.StatusCode != http.StatusForbidden {
+		t.Errorf("project admin global hook: got %d want 403", r.StatusCode)
+	}
+	r := postJSON(t, srv.URL+"/ui/api/webhooks/save", `{"name":"team hook","url":"`+recv.URL+`","project":"team","events":["push","delete"],"auth_header":"Bearer s3cret"}`, bob)
+	var saved struct{ ID string }
+	json.NewDecoder(r.Body).Decode(&saved)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK || saved.ID == "" {
+		t.Fatalf("save: %d", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/webhooks/save", `{"name":"bad","url":"ftp://x","project":"team","events":["push"]}`, bob); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad URL: got %d", r.StatusCode)
+	}
+
+	// The auth header is never returned.
+	resp := do(t, "GET", srv.URL+"/ui/api/webhooks", nil, bob)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(raw), "s3cret") || !strings.Contains(string(raw), `"has_auth":true`) {
+		t.Errorf("webhook list leaks or misses auth: %s", raw)
+	}
+
+	// Push and delete in the project fire the hook; outside the project not.
+	m := []byte(`{"schemaVersion":2,"layers":[]}`)
+	for _, repo := range []string{"team/app", "free"} {
+		p := do(t, "PUT", srv.URL+"/v2/"+repo+"/manifests/1", m, map[string]string{
+			"Authorization": alice["Authorization"], "Content-Type": "application/vnd.oci.image.manifest.v1+json"})
+		p.Body.Close()
+	}
+	status(t, "DELETE", srv.URL+"/v2/team/app/manifests/1", alice)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	got := strings.Join(events, ",")
+	mu.Unlock()
+	if got != "PUSH_ARTIFACT,DELETE_ARTIFACT" {
+		t.Errorf("events: %s", got)
+	}
+
+	r = postJSON(t, srv.URL+"/ui/api/webhooks/test", `{"id":"`+saved.ID+`"}`, bob)
+	var d struct {
+		Status int
+		Error  string
+	}
+	json.NewDecoder(r.Body).Decode(&d)
+	r.Body.Close()
+	if d.Status != 200 || d.Error != "" {
+		t.Errorf("test delivery: %+v", d)
 	}
 }

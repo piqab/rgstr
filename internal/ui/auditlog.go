@@ -15,6 +15,7 @@ var auditActions = []string{
 	audit.GCRun, audit.GCSettings, audit.RetentionRun, audit.PolicyChange,
 	audit.ProjectCreate, audit.ProjectUpdate, audit.ProjectDelete, audit.ProjectMember,
 	audit.RobotCreate, audit.RobotUpdate, audit.RobotSecret, audit.RobotDelete,
+	audit.WebhookChange, audit.WebhookDelete,
 }
 
 // handleAudit returns audit entries, newest first (administrators only).

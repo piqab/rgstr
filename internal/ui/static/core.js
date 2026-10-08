@@ -47,6 +47,7 @@ const App = (() => {
     token: sessionStorage.getItem('rgstr_token') || '',
     user: '',
     admin: false,
+    projectAdmin: false, // manages at least one project
     authEnabled: true,
     ready: false,
     // Set while a temporary password must be replaced: the credentials the
@@ -102,7 +103,7 @@ const App = (() => {
       $('hdr-user').textContent = t('hdr.noauth');
       showApp();
     } else if (me.data.user) {
-      signedIn(me.data.user, me.data.admin);
+      signedIn(me.data.user, me.data.admin, me.data.project_admin);
     } else {
       showLogin(session.token ? t('login.expired') : '');
     }
@@ -129,12 +130,13 @@ const App = (() => {
     sessionStorage.setItem('rgstr_token', s.token);
     $('li-pass').value = '';
     $('login-overlay').classList.remove('show');
-    signedIn(s.user, s.admin);
+    signedIn(s.user, s.admin, s.project_admin);
   }
 
-  function signedIn(name, admin) {
+  function signedIn(name, admin, projectAdmin) {
     session.user = name;
     session.admin = !!admin;
+    session.projectAdmin = !!projectAdmin;
     $('hdr-user').textContent = name;
     $('btn-password').style.display = 'block';
     $('btn-logout').style.display = 'block';
@@ -152,6 +154,7 @@ const App = (() => {
     session.token = '';
     session.user = '';
     session.admin = false;
+    session.projectAdmin = false;
     session.ready = false;
     sessionStorage.removeItem('rgstr_token');
     $('app').style.display = 'none';
