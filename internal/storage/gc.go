@@ -31,10 +31,17 @@ func (fs *Filesystem) GCLoop(ctx context.Context, interval time.Duration) {
 // The algorithm:
 //  1. Acquire the global write lock so no blobs can be written or deleted
 //     concurrently during the sweep.
-//  2. Mark: walk every manifest file and collect referenced blob digests.
-//     Also mark each manifest's own digest.
-//  3. Sweep: walk every blob file; delete any that are not marked.
+//  2. Mark: in each repository, start from the manifests its tags point to
+//     and follow every digest they reference (child manifests of an index,
+//     config, layers). Everything reached is in use.
+//  3. Sweep: delete blobs that were not marked, then by-digest manifests that
+//     no tag reaches in their repository.
 //  4. Clean stale upload sessions (older than cfg.UploadTTL).
+//
+// Grace period: a push uploads blobs and child manifests before the manifest
+// or tag that references them. Blobs linked to a repository and by-digest
+// manifests written within cfg.UploadTTL are therefore kept even when nothing
+// references them yet, so GC never deletes the pieces of an in-progress push.
 //
 // Because the write lock is held throughout, the window where a blob could be
 // concurrently deleted or written is closed, so there are no TOCTOU races.
@@ -45,54 +52,92 @@ func (fs *Filesystem) RunGC() error {
 	fs.gcMu.Lock()
 	defer fs.gcMu.Unlock()
 
-	// ── Phase 1: Mark referenced blobs ────────────────────────────────────
-	referenced := make(map[string]bool) // hex hash → true
+	// ── Phase 1: Mark ─────────────────────────────────────────────────────
+	referenced := make(map[string]bool) // blob hex hash → in use
+	recent := func(d os.DirEntry) bool {
+		info, err := d.Info()
+		return err == nil && time.Since(info.ModTime()) < fs.cfg.UploadTTL
+	}
 
+	type repoState struct {
+		roots     []string          // manifest hex hashes that are in use
+		manifests map[string]string // by-digest hex → file path
+	}
+	repos := make(map[string]*repoState) // repo dir → state
+	repo := func(dir string) *repoState {
+		st, ok := repos[dir]
+		if !ok {
+			st = &repoState{manifests: make(map[string]string)}
+			repos[dir] = st
+		}
+		return st
+	}
+
+	// Layout: <repo>/manifests/by-digest/<hex>, <repo>/manifests/tags/<tag>,
+	// <repo>/layers/<hex>.
 	reposDir := filepath.Join(fs.root, "repositories")
 	if err := filepath.WalkDir(reposDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
-
-		// ── Manifest by-digest files ──
-		if strings.Contains(filepath.ToSlash(path), "/manifests/by-digest/") {
-			hexHash := d.Name()
-			// The manifest file itself counts as a referenced blob if a layer
-			// with that hash exists (for manifest blob pruning).
-			referenced[hexHash] = true
-
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return nil
+		dir := filepath.Dir(path)
+		parent := filepath.Dir(dir)
+		switch {
+		case filepath.Base(dir) == "by-digest" && filepath.Base(parent) == "manifests":
+			st := repo(filepath.Dir(parent))
+			st.manifests[d.Name()] = path
+			if recent(d) {
+				st.roots = append(st.roots, d.Name())
 			}
-			var mf manifestFile
-			if err := json.Unmarshal(raw, &mf); err != nil {
-				return nil
-			}
-			for _, dig := range extractDigests(mf.Content) {
-				if dig.Algorithm() == "sha256" {
-					referenced[dig.Hex()] = true
-				}
-			}
-		}
 
-		// ── Tag pointer files ─────────────────────────────────────────────
-		// A tag file contains a hex hash that points to a by-digest manifest.
-		// Keep any manifest whose hex is still pointed to by at least one tag.
-		if strings.Contains(filepath.ToSlash(path), "/manifests/tags/") {
+		case filepath.Base(dir) == "tags" && filepath.Base(parent) == "manifests":
 			b, err := os.ReadFile(path)
 			if err != nil {
 				return nil
 			}
-			hexHash := strings.TrimSpace(string(b))
-			if len(hexHash) == 64 {
-				referenced[hexHash] = true
+			if hexHash := strings.TrimSpace(string(b)); len(hexHash) == 64 {
+				st := repo(filepath.Dir(parent))
+				st.roots = append(st.roots, hexHash)
 			}
-		}
 
+		case filepath.Base(dir) == "layers" && recent(d):
+			referenced[d.Name()] = true
+		}
 		return nil
 	}); err != nil {
 		return err
+	}
+
+	// Follow references from the roots. A digest that names a manifest in
+	// the same repository (e.g. a platform manifest of an index) is followed
+	// further; any other digest is a blob.
+	reachable := make(map[string]bool) // by-digest file path → in use
+	for _, st := range repos {
+		stack := append([]string(nil), st.roots...)
+		for len(stack) > 0 {
+			hexHash := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			path, ok := st.manifests[hexHash]
+			if !ok || reachable[path] {
+				continue
+			}
+			reachable[path] = true
+			// Some clients also upload the manifest as a blob; keep it.
+			referenced[hexHash] = true
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			var mf manifestFile
+			if err := json.Unmarshal(raw, &mf); err != nil {
+				continue
+			}
+			for _, dig := range extractDigests(mf.Content) {
+				referenced[dig.Hex()] = true
+				stack = append(stack, dig.Hex())
+			}
+		}
 	}
 
 	// ── Phase 2: Sweep unreferenced blobs ─────────────────────────────────
@@ -141,30 +186,18 @@ func (fs *Filesystem) RunGC() error {
 		return nil
 	})
 
-	// ── Phase 3: Remove orphaned by-digest manifests ──────────────────────
-	// A by-digest manifest is orphaned when no tag points to it and it was
-	// not referenced transitively by another manifest.
+	// ── Phase 3: Remove unreachable by-digest manifests ──────────────────
 	deletedMfst := 0
-	if err := filepath.WalkDir(reposDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		if !strings.Contains(filepath.ToSlash(path), "/manifests/by-digest/") {
-			return nil
-		}
-		hexHash := d.Name()
-		if len(hexHash) != 64 {
-			return nil
-		}
-		if !referenced[hexHash] {
+	for _, st := range repos {
+		for hexHash, path := range st.manifests {
+			if reachable[path] {
+				continue
+			}
 			if err := os.Remove(path); err == nil {
 				log.Printf("gc: removed manifest sha256:%s", hexHash)
 				deletedMfst++
 			}
 		}
-		return nil
-	}); err != nil {
-		return err
 	}
 
 	// ── Phase 4: Clean stale upload sessions ──────────────────────────────

@@ -12,7 +12,7 @@
 - **Chunked uploads** — возобновляемые загрузки с проверкой `Content-Range`
 - **Дедупликация blob'ов** — одни и те же слои хранятся на диске один раз вне зависимости от количества репозиториев
 - **Cross-repo mount** — мгновенное монтирование blob'а из другого репозитория без передачи данных (при наличии права pull на исходный репозиторий)
-- **Garbage collection** — периодическая очистка недостижимых blob'ов и зависших сессий загрузки
+- **Garbage collection** — периодическая очистка образов без тегов, их blob'ов и зависших сессий загрузки; не мешает идущему push
 - **Bearer token auth** — JWT (HS256) по Docker auth specification, Basic auth на токен-эндпоинте
 - **Публичные и приватные репозитории** — гибкий контроль доступа через glob-паттерны, анонимный pull без авторизации
 - **Range downloads** — поддержка HTTP `Range` заголовка при скачивании слоёв
@@ -165,7 +165,7 @@ cp .env.example .env
 | `RGSTR_READONLY_USERS` | — | Пользователи только с правом pull |
 | `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
 | `RGSTR_GC_INTERVAL` | `1h` | Интервал запуска сборщика мусора |
-| `RGSTR_UPLOAD_TTL` | `24h` | Через сколько удалять незавершённые загрузки |
+| `RGSTR_UPLOAD_TTL` | `24h` | Через сколько удалять незавершённые загрузки. Это же льготный период GC: загруженное недавно не удаляется, даже если на него ещё не указывает тег |
 
 ### Формат RGSTR_USERS
 
@@ -418,7 +418,7 @@ make release            # Все платформы сразу
 | `DELETE` | `/v2/<name>/manifests/<ref>` | Удаление: по тегу — только этот тег, по digest — манифест и все теги на него |
 | `HEAD` | `/v2/<name>/blobs/<digest>` | Проверка существования blob'а |
 | `GET` | `/v2/<name>/blobs/<digest>` | Скачивание blob'а (с поддержкой Range) |
-| `DELETE` | `/v2/<name>/blobs/<digest>` | Отвязка blob'а от репозитория; данные удаляет GC, когда на них не ссылается ни один манифест |
+| `DELETE` | `/v2/<name>/blobs/<digest>` | Отвязка blob'а от репозитория; данные удаляет GC, когда они не нужны ни одному образу с тегом |
 | `POST` | `/v2/<name>/blobs/uploads/` | Начало загрузки |
 | `GET` | `/v2/<name>/blobs/uploads/<uuid>` | Статус загрузки |
 | `PATCH` | `/v2/<name>/blobs/uploads/<uuid>` | Загрузка чанка |
@@ -564,7 +564,7 @@ main.go
     │   └── middleware.go — HTTP middleware: Bearer/Basic, /v2/auth эндпоинт
     ├── storage/
     │   ├── storage.go    — content-addressable хранилище, upload-сессии, манифесты
-    │   └── gc.go         — mark-and-sweep GC
+    │   └── gc.go         — mark-and-sweep GC: всё, что достижимо от тегов, плюс недавние загрузки
     └── registry/
         ├── registry.go   — HTTP handlers, роутинг
         └── errors.go     — OCI error codes

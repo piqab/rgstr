@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -356,12 +357,74 @@ func TestGCDropsLinksToRemovedBlobs(t *testing.T) {
 	d := digestOf(data)
 	fs.PutBlob(d, bytes.NewReader(data))
 	fs.LinkBlob("repo", d)
+	age(t, fs.layerRefPath("repo", d.Hex()))
 
 	if err := fs.RunGC(); err != nil {
 		t.Fatalf("GC: %v", err)
 	}
 	if fs.BlobLinked("repo", d) {
 		t.Error("link to a GC-removed blob survived")
+	}
+}
+
+// age backdates path beyond the GC grace period.
+func age(t *testing.T, path string) {
+	t.Helper()
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+}
+
+// A push uploads blobs before the manifest; GC running in between must not
+// delete them.
+func TestGCKeepsRecentlyUploadedBlobs(t *testing.T) {
+	fs := newTestFS(t)
+	info, _ := fs.StartUpload("repo")
+	data := []byte("pushed, manifest not yet")
+	d := digestOf(data)
+	if _, err := fs.CompleteUpload(info.UUID, d, bytes.NewReader(data)); err != nil {
+		t.Fatalf("CompleteUpload: %v", err)
+	}
+
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := fs.StatBlob(d); err != nil {
+		t.Errorf("recently uploaded blob was GC'd: %v", err)
+	}
+
+	age(t, fs.layerRefPath("repo", d.Hex()))
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := fs.StatBlob(d); err != ErrBlobNotFound {
+		t.Errorf("unreferenced blob past grace period: got %v want ErrBlobNotFound", err)
+	}
+}
+
+// Multi-platform pushes upload child manifests by digest before the tagged
+// index; GC running in between must not delete them.
+func TestGCKeepsRecentUntaggedManifests(t *testing.T) {
+	fs := newTestFS(t)
+	mf := &Manifest{ContentType: "application/json", Content: []byte(`{"schemaVersion":2}`)}
+	if err := fs.PutManifest("repo", "sha256:"+strings.Repeat("0", 64), mf); err != nil {
+		t.Fatalf("PutManifest: %v", err)
+	}
+
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := fs.GetManifest("repo", string(mf.Digest)); err != nil {
+		t.Errorf("recent untagged manifest was GC'd: %v", err)
+	}
+
+	age(t, fs.manifestDigestPath("repo", mf.Digest.Hex()))
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := fs.GetManifest("repo", string(mf.Digest)); err != ErrManifestNotFound {
+		t.Errorf("untagged manifest past grace period: got %v want ErrManifestNotFound", err)
 	}
 }
 
@@ -447,4 +510,75 @@ func isRangeError(err error, out **RangeError) bool {
 		return true
 	}
 	return false
+}
+
+// putImage stores a one-layer image in repo under ref and backdates every
+// file so the GC grace period does not apply. Returns manifest and layer.
+func putImage(t *testing.T, fs *Filesystem, repo, ref string, layer []byte) (*Manifest, Digest) {
+	t.Helper()
+	ld := digestOf(layer)
+	fs.PutBlob(ld, bytes.NewReader(layer))
+	fs.LinkBlob(repo, ld)
+	mf := &Manifest{ContentType: "application/json",
+		Content: []byte(`{"layers":[{"digest":"` + string(ld) + `"}]}`)}
+	if err := fs.PutManifest(repo, ref, mf); err != nil {
+		t.Fatalf("PutManifest: %v", err)
+	}
+	age(t, fs.manifestDigestPath(repo, mf.Digest.Hex()))
+	age(t, fs.layerRefPath(repo, ld.Hex()))
+	return mf, ld
+}
+
+func TestGCCollectsImageAfterTagDelete(t *testing.T) {
+	fs := newTestFS(t)
+	mf, layer := putImage(t, fs, "repo", "latest", []byte("old image"))
+
+	if err := fs.DeleteManifest("repo", "latest"); err != nil {
+		t.Fatalf("DeleteManifest: %v", err)
+	}
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := fs.GetManifest("repo", string(mf.Digest)); err != ErrManifestNotFound {
+		t.Errorf("untagged manifest: got %v want ErrManifestNotFound", err)
+	}
+	if _, err := fs.StatBlob(layer); err != ErrBlobNotFound {
+		t.Errorf("layer of untagged image: got %v want ErrBlobNotFound", err)
+	}
+}
+
+func TestGCKeepsIndexChildren(t *testing.T) {
+	fs := newTestFS(t)
+	child, layer := putImage(t, fs, "repo", "sha256:"+strings.Repeat("0", 64), []byte("arm64 layer"))
+	index := &Manifest{ContentType: "application/vnd.oci.image.index.v1+json",
+		Content: []byte(`{"manifests":[{"digest":"` + string(child.Digest) + `"}]}`)}
+	if err := fs.PutManifest("repo", "multi", index); err != nil {
+		t.Fatalf("PutManifest index: %v", err)
+	}
+	age(t, fs.manifestDigestPath("repo", index.Digest.Hex()))
+
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := fs.GetManifest("repo", string(child.Digest)); err != nil {
+		t.Errorf("child manifest of tagged index was GC'd: %v", err)
+	}
+	if _, err := fs.StatBlob(layer); err != nil {
+		t.Errorf("layer of child manifest was GC'd: %v", err)
+	}
+}
+
+func TestGCKeepsBlobUsedByOtherRepo(t *testing.T) {
+	fs := newTestFS(t)
+	shared := []byte("shared layer")
+	putImage(t, fs, "a", "latest", shared)
+	_, layer := putImage(t, fs, "b", "latest", shared)
+
+	fs.DeleteManifest("a", "latest")
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if _, err := fs.StatBlob(layer); err != nil {
+		t.Errorf("layer still used by repo b was GC'd: %v", err)
+	}
 }

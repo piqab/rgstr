@@ -440,11 +440,6 @@ func (reg *Registry) handlePutUpload(w http.ResponseWriter, r *http.Request, rep
 		return
 	}
 
-	if err := reg.store.LinkBlob(repo, blobInfo.Digest); err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
-		return
-	}
-
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/%s", repo, blobInfo.Digest))
 	w.Header().Set("Docker-Content-Digest", string(blobInfo.Digest))
 	w.Header().Set("Content-Length", "0")

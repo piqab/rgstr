@@ -283,7 +283,8 @@ func (fs *Filesystem) MountBlob(from, to string, d Digest) bool {
 // one of its manifests. Without this, anyone who can read one repository could
 // fetch any blob in the store by digest.
 
-// LinkBlob records that blob d belongs to repo.
+// LinkBlob records that blob d belongs to repo. Linking refreshes the link's
+// mtime, which GC treats as a grace period (see RunGC).
 func (fs *Filesystem) LinkBlob(repo string, d Digest) error {
 	fs.gcMu.RLock()
 	defer fs.gcMu.RUnlock()
@@ -295,6 +296,10 @@ func (fs *Filesystem) linkBlobLocked(repo string, d Digest) error {
 		return fmt.Errorf("invalid digest %q", d)
 	}
 	path := fs.layerRefPath(repo, d.Hex())
+	now := time.Now()
+	if os.Chtimes(path, now, now) == nil {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -429,7 +434,9 @@ func (fs *Filesystem) AppendUpload(uuid string, r io.Reader, startOffset int64) 
 //
 // If finalChunk is non-nil it is appended before the digest is verified
 // (this handles the case where the client sends data in the PUT request).
-// The upload session is removed on success.
+// The blob is linked to the session's repository under the same lock, so GC
+// cannot remove it before the client pushes the manifest. The upload session
+// is removed on success.
 func (fs *Filesystem) CompleteUpload(uuid string, expected Digest, finalChunk io.Reader) (*BlobInfo, error) {
 	fs.gcMu.RLock()
 	defer fs.gcMu.RUnlock()
@@ -439,8 +446,8 @@ func (fs *Filesystem) CompleteUpload(uuid string, expected Digest, finalChunk io
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Verify the upload session exists; we only need its presence, not its fields.
-	if _, err := fs.loadUploadInfo(uuid); err != nil {
+	info, err := fs.loadUploadInfo(uuid)
+	if err != nil {
 		return nil, err
 	}
 
@@ -489,6 +496,10 @@ func (fs *Filesystem) CompleteUpload(uuid string, expected Digest, finalChunk io
 		}
 	}
 	// If the blob already exists, the rename is skipped (deduplication wins).
+
+	if err := fs.linkBlobLocked(info.Repo, actual); err != nil {
+		return nil, fmt.Errorf("link blob: %w", err)
+	}
 
 	// Clean up the upload session.
 	os.RemoveAll(fs.uploadDir(uuid))
