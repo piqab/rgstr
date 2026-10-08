@@ -124,6 +124,23 @@ func (fs *Filesystem) RunGC() error {
 		return err
 	}
 
+	// ── Phase 2b: Drop repository links to removed blobs ──────────────────
+	// Otherwise a repo would regain access if the same content were later
+	// uploaded to a different repository.
+	filepath.WalkDir(reposDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Base(filepath.Dir(path)) != "layers" {
+			return nil
+		}
+		blob := DigestFromHex(d.Name())
+		if !blob.Valid() {
+			return nil
+		}
+		if _, err := os.Stat(fs.blobPath(blob)); os.IsNotExist(err) {
+			os.Remove(path)
+		}
+		return nil
+	})
+
 	// ── Phase 3: Remove orphaned by-digest manifests ──────────────────────
 	// A by-digest manifest is orphaned when no tag points to it and it was
 	// not referenced transitively by another manifest.

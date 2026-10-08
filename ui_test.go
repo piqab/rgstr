@@ -19,9 +19,9 @@ import (
 	"rgstr/internal/storage"
 )
 
-// newAuthTestServer starts a registry with auth enabled and users alice
-// (admin) and bob (regular), both with password "secret".
-func newAuthTestServer(t *testing.T) *httptest.Server {
+// newAuthTestServer starts a registry with auth enabled, users alice (admin)
+// and bob (regular), both with password "secret", and the given public repos.
+func newAuthTestServer(t *testing.T, publicRepos ...string) *httptest.Server {
 	t.Helper()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
 	cfg := &config.Config{
@@ -35,6 +35,7 @@ func newAuthTestServer(t *testing.T) *httptest.Server {
 		UploadTTL:   24 * time.Hour,
 		Users:       map[string]string{"alice": string(hash), "bob": string(hash)},
 		Admins:      []string{"alice"},
+		PublicRepos: publicRepos,
 		StorageRoot: t.TempDir(),
 	}
 	store, err := storage.NewFilesystem(cfg.StorageRoot, cfg)

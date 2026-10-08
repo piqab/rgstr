@@ -8,7 +8,7 @@
 //	uploads/<uuid>/info.json                       — upload metadata
 //	repositories/<name>/manifests/by-digest/<hex>  — manifest JSON + content-type
 //	repositories/<name>/manifests/tags/<tag>        — contains hex digest string
-//	repositories/<name>/layers/<hex>               — empty marker for GC ref-tracking
+//	repositories/<name>/layers/<hex>               — empty marker: blob belongs to this repo
 //
 // Notes on Windows compatibility: colons are illegal in NTFS file names, so we
 // store digests as plain hex strings and reconstruct "sha256:<hex>" in memory.
@@ -260,11 +260,80 @@ func (fs *Filesystem) DeleteBlob(d Digest) error {
 	return nil
 }
 
-// MountBlob attempts a cross-repository blob mount. Returns true when the blob
-// exists in the store (regardless of which repo originally pushed it).
-func (fs *Filesystem) MountBlob(d Digest) bool {
-	_, err := fs.StatBlob(d)
+// MountBlob links blob d from repository from into repository to without
+// transferring data. Returns false when the blob is missing or does not
+// belong to from.
+func (fs *Filesystem) MountBlob(from, to string, d Digest) bool {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+
+	if !fs.blobLinkedLocked(from, d) {
+		return false
+	}
+	if _, err := fs.statBlobLocked(d); err != nil {
+		return false
+	}
+	return fs.linkBlobLocked(to, d) == nil
+}
+
+// ─── Repository blob links ────────────────────────────────────────────────────
+//
+// Blobs are stored once for all repositories, but a repository may only serve
+// the blobs linked to it: uploaded to it, mounted into it, or referenced by
+// one of its manifests. Without this, anyone who can read one repository could
+// fetch any blob in the store by digest.
+
+// LinkBlob records that blob d belongs to repo.
+func (fs *Filesystem) LinkBlob(repo string, d Digest) error {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+	return fs.linkBlobLocked(repo, d)
+}
+
+func (fs *Filesystem) linkBlobLocked(repo string, d Digest) error {
+	if !d.Valid() {
+		return fmt.Errorf("invalid digest %q", d)
+	}
+	path := fs.layerRefPath(repo, d.Hex())
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// BlobLinked reports whether blob d belongs to repo.
+func (fs *Filesystem) BlobLinked(repo string, d Digest) bool {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+	return fs.blobLinkedLocked(repo, d)
+}
+
+func (fs *Filesystem) blobLinkedLocked(repo string, d Digest) bool {
+	if !d.Valid() {
+		return false
+	}
+	_, err := os.Stat(fs.layerRefPath(repo, d.Hex()))
 	return err == nil
+}
+
+// UnlinkBlob removes blob d from repo. The data stays on disk while other
+// repositories use it; GC removes it once no manifest references it.
+func (fs *Filesystem) UnlinkBlob(repo string, d Digest) error {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+
+	if !d.Valid() {
+		return ErrBlobNotFound
+	}
+	err := os.Remove(fs.layerRefPath(repo, d.Hex()))
+	if os.IsNotExist(err) {
+		return ErrBlobNotFound
+	}
+	return err
 }
 
 // ─── Upload session operations ────────────────────────────────────────────────
@@ -621,20 +690,11 @@ func (fs *Filesystem) layerRefPath(repo, hexHash string) string {
 	return filepath.Join(fs.repoBase(repo), "layers", hexHash)
 }
 
-// recordBlobRefs parses manifest content and creates empty marker files for
-// each referenced blob so the GC knows they are reachable.
+// recordBlobRefs links every blob referenced by manifest content to repo.
 func (fs *Filesystem) recordBlobRefs(repo string, content []byte) error {
-	layerDir := filepath.Join(fs.repoBase(repo), "layers")
-	if err := os.MkdirAll(layerDir, 0755); err != nil {
-		return err
-	}
 	for _, d := range extractDigests(content) {
-		if d.Algorithm() != "sha256" {
-			continue
-		}
-		path := fs.layerRefPath(repo, d.Hex())
-		if f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644); err == nil {
-			f.Close()
+		if err := fs.linkBlobLocked(repo, d); err != nil {
+			return err
 		}
 	}
 	return nil

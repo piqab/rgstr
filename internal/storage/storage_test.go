@@ -350,6 +350,21 @@ func TestGCRemovesUnreferencedBlobs(t *testing.T) {
 	}
 }
 
+func TestGCDropsLinksToRemovedBlobs(t *testing.T) {
+	fs := newTestFS(t)
+	data := []byte("unreferenced but linked")
+	d := digestOf(data)
+	fs.PutBlob(d, bytes.NewReader(data))
+	fs.LinkBlob("repo", d)
+
+	if err := fs.RunGC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if fs.BlobLinked("repo", d) {
+		t.Error("link to a GC-removed blob survived")
+	}
+}
+
 func TestGCKeepsReferencedBlobs(t *testing.T) {
 	fs := newTestFS(t)
 

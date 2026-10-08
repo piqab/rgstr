@@ -182,7 +182,7 @@ func (reg *Registry) dispatch(w http.ResponseWriter, r *http.Request) {
 // ─── Blob handlers ────────────────────────────────────────────────────────────
 
 func (reg *Registry) handleHeadBlob(w http.ResponseWriter, r *http.Request, repo string, d storage.Digest) {
-	info, err := reg.store.StatBlob(d)
+	info, err := reg.repoBlob(repo, d)
 	if err != nil {
 		if errors.Is(err, storage.ErrBlobNotFound) {
 			writeError(w, http.StatusNotFound, CodeBlobUnknown, "blob unknown",
@@ -199,6 +199,15 @@ func (reg *Registry) handleHeadBlob(w http.ResponseWriter, r *http.Request, repo
 }
 
 func (reg *Registry) handleGetBlob(w http.ResponseWriter, r *http.Request, repo string, d storage.Digest) {
+	if _, err := reg.repoBlob(repo, d); err != nil {
+		if errors.Is(err, storage.ErrBlobNotFound) {
+			writeError(w, http.StatusNotFound, CodeBlobUnknown, "blob unknown",
+				map[string]string{"digest": string(d)})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+		return
+	}
 	f, err := reg.store.OpenBlob(d)
 	if err != nil {
 		if errors.Is(err, storage.ErrBlobNotFound) {
@@ -218,8 +227,19 @@ func (reg *Registry) handleGetBlob(w http.ResponseWriter, r *http.Request, repo 
 	http.ServeContent(w, r, "", fi.ModTime(), f)
 }
 
+// repoBlob returns blob metadata if the blob exists and belongs to repo,
+// otherwise ErrBlobNotFound — blobs of other repositories stay invisible.
+func (reg *Registry) repoBlob(repo string, d storage.Digest) (*storage.BlobInfo, error) {
+	if !reg.store.BlobLinked(repo, d) {
+		return nil, storage.ErrBlobNotFound
+	}
+	return reg.store.StatBlob(d)
+}
+
+// handleDeleteBlob unlinks the blob from repo only; other repositories that
+// share it are unaffected, and GC removes the data once unreferenced.
 func (reg *Registry) handleDeleteBlob(w http.ResponseWriter, _ *http.Request, repo string, d storage.Digest) {
-	if err := reg.store.DeleteBlob(d); err != nil {
+	if err := reg.store.UnlinkBlob(repo, d); err != nil {
 		if errors.Is(err, storage.ErrBlobNotFound) {
 			writeError(w, http.StatusNotFound, CodeBlobUnknown, "blob unknown", nil)
 			return
@@ -245,9 +265,13 @@ func (reg *Registry) handleStartUpload(w http.ResponseWriter, r *http.Request, r
 	fromRepo := q.Get("from")
 
 	// ── Cross-repo mount ──────────────────────────────────────────────────
+	// Only from a repository the client may pull, and only blobs that belong
+	// to it — otherwise a known digest would expose another repo's data.
 	if mount != "" {
 		d := storage.Digest(mount)
-		if d.Valid() && reg.store.MountBlob(d) {
+		if d.Valid() && fromRepo != "" &&
+			auth.HasAccess(r.Context(), "repository", fromRepo, "pull") &&
+			reg.store.MountBlob(fromRepo, repo, d) {
 			// Blob already exists — no data transfer needed.
 			w.Header().Set("Location", fmt.Sprintf("/v2/%s/blobs/%s", repo, d))
 			w.Header().Set("Docker-Content-Digest", string(d))
@@ -255,9 +279,7 @@ func (reg *Registry) handleStartUpload(w http.ResponseWriter, r *http.Request, r
 			w.WriteHeader(http.StatusCreated)
 			return
 		}
-		// Blob not found in store — fall through and start a fresh upload.
-		// (The from-repo hint is informational only.)
-		_ = fromRepo
+		// Mount refused — fall through and start a fresh upload.
 	}
 
 	info, err := reg.store.StartUpload(repo)
@@ -414,6 +436,11 @@ func (reg *Registry) handlePutUpload(w http.ResponseWriter, r *http.Request, rep
 				})
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+		return
+	}
+
+	if err := reg.store.LinkBlob(repo, blobInfo.Digest); err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
