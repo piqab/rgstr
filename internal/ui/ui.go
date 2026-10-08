@@ -70,6 +70,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/policies/retention", h.handleRetentionRules)
 	mux.HandleFunc("/ui/api/policies/retention/run", h.handleRetentionRun)
 	mux.HandleFunc("/ui/api/policies/immutable", h.handleImmutableRules)
+
+	mux.HandleFunc("/ui/api/users", h.handleUsers)
+	mux.HandleFunc("/ui/api/users/create", h.handleUserCreate)
+	mux.HandleFunc("/ui/api/users/role", h.handleUserRole)
+	mux.HandleFunc("/ui/api/users/password", h.handleUserPassword)
+	mux.HandleFunc("/ui/api/users/delete", h.handleUserDelete)
 }
 
 // servePage serves the app shell; navigation happens client-side (#hash).

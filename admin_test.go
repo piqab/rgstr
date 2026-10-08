@@ -194,3 +194,53 @@ func TestRetentionRun(t *testing.T) {
 		t.Errorf("after run: %d tags, want 1", len(tags))
 	}
 }
+
+func TestUIUserManagement(t *testing.T) {
+	srv := newAuthTestServer(t)
+	alice := map[string]string{"Authorization": "Basic YWxpY2U6c2VjcmV0"}
+	bob := map[string]string{"Authorization": "Basic Ym9iOnNlY3JldA=="}
+
+	if code := status(t, "GET", srv.URL+"/ui/api/users", bob); code != http.StatusForbidden {
+		t.Errorf("non-admin list: got %d want 403", code)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/users/create", `{"name":"carol","role":"readonly","password":"carol-pass","must_change":false}`, alice); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("create: got %d", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/users/create", `{"name":"carol","role":"user","password":"carol-pass"}`, alice); r.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate: got %d want 409", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/users/delete", `{"name":"alice"}`, alice); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("delete self: got %d want 400", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/users/role", `{"name":"bob","role":"admin"}`, alice); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("env user role: got %d want 400", r.StatusCode)
+	}
+
+	resp := do(t, "GET", srv.URL+"/ui/api/users", nil, alice)
+	var list struct {
+		Users []struct {
+			Name, Source, Role string
+		} `json:"users"`
+	}
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	got := map[string]string{}
+	for _, u := range list.Users {
+		got[u.Name] = u.Source + "/" + u.Role
+	}
+	want := map[string]string{"admin": "bootstrap/admin", "alice": "env/admin", "bob": "env/user", "carol": "admin/readonly"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("user %s: got %q want %q", k, got[k], v)
+		}
+	}
+
+	// carol can pull via docker but not push.
+	carol := map[string]string{"Authorization": "Basic Y2Fyb2w6Y2Fyb2wtcGFzcw=="} // carol:carol-pass
+	if code := status(t, "GET", srv.URL+"/v2/_catalog", carol); code != http.StatusOK {
+		t.Errorf("carol catalog: got %d", code)
+	}
+	if code := status(t, "POST", srv.URL+"/v2/x/blobs/uploads/", carol); code != http.StatusForbidden {
+		t.Errorf("carol push: got %d want 403", code)
+	}
+}

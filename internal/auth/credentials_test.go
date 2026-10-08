@@ -175,3 +175,118 @@ func TestRemovedUserLosesStoredPassword(t *testing.T) {
 		t.Error("removed user still in users.json")
 	}
 }
+
+func TestManagedUsers(t *testing.T) {
+	cfg := bootstrapCfg(t) // alice is an env admin
+	h := handlerFor(cfg)
+
+	if err := h.CreateUser("bad name", RoleUser, "password1", false); err != ErrInvalidName {
+		t.Errorf("invalid name: got %v", err)
+	}
+	if err := h.CreateUser("alice", RoleUser, "password1", false); err != ErrUserExists {
+		t.Errorf("env name: got %v", err)
+	}
+	if err := h.CreateUser("dave", "root", "password1", false); err != ErrInvalidRole {
+		t.Errorf("invalid role: got %v", err)
+	}
+	if err := h.CreateUser("dave", RoleUser, "short", false); err != ErrWeakPassword {
+		t.Errorf("weak password: got %v", err)
+	}
+
+	// Temporary password: UI login asks for a change, docker login refused.
+	if err := h.CreateUser("dave", RoleUser, "temp-pass", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Login("dave", "temp-pass"); err != ErrPasswordChangeRequired {
+		t.Errorf("temporary password login: got %v", err)
+	}
+	if code := serve(t, h, http.MethodGet, "/v2/_catalog", basicAuth("dave", "temp-pass")); code != http.StatusUnauthorized {
+		t.Errorf("docker auth with temporary password: got %d want 401", code)
+	}
+	if err := h.ChangePassword("dave", "temp-pass", "dave-own-pw"); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := h.Login("dave", "dave-own-pw")
+	if err != nil {
+		t.Fatalf("login after change: %v", err)
+	}
+
+	// Managed "user" role: no delete, even though RGSTR_ADMINS... is set
+	// here; and no legacy delete rule for managed users.
+	if h.Can("dave", "app", "delete") || !h.Can("dave", "app", "push") {
+		t.Errorf("user role rights: %v", h.UserActions("dave"))
+	}
+	h.SetRole("dave", RoleReadOnly)
+	if h.Can("dave", "app", "push") {
+		t.Error("read-only can push")
+	}
+	h.SetRole("dave", RoleAdmin)
+	if !h.IsAdmin("dave") || !h.Can("dave", "app", "delete") {
+		t.Error("admin role lacks rights")
+	}
+	if err := h.SetRole("alice", RoleUser); err != ErrEnvUser {
+		t.Errorf("set role of env user: got %v", err)
+	}
+
+	// Persisted.
+	if role := handlerFor(cfg).Role("dave"); role != RoleAdmin {
+		t.Errorf("role after restart: %q", role)
+	}
+
+	// Deleted user loses access at once, token or not.
+	if err := h.DeleteUser("dave"); err != nil {
+		t.Fatal(err)
+	}
+	bearer := map[string]string{"Authorization": "Bearer " + tok}
+	if code := serve(t, h, http.MethodGet, "/v2/x/manifests/latest", bearer); code != http.StatusUnauthorized {
+		t.Errorf("deleted user's token: got %d want 401", code)
+	}
+	if err := h.DeleteUser("alice"); err != ErrEnvUser {
+		t.Errorf("delete env user: got %v", err)
+	}
+}
+
+func TestResetEnvUserPassword(t *testing.T) {
+	h := handlerFor(bootstrapCfg(t))
+	if err := h.ResetPassword("alice", "temporary1", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Login("alice", "secret"); err != ErrInvalidCredentials {
+		t.Errorf("old env password: got %v", err)
+	}
+	if _, err := h.Login("alice", "temporary1"); err != ErrPasswordChangeRequired {
+		t.Errorf("reset password: got %v", err)
+	}
+	if err := h.ResetPassword("nobody", "temporary1", true); err != ErrUserNotFound {
+		t.Errorf("unknown user: got %v", err)
+	}
+}
+
+func TestEnvShadowsManagedUser(t *testing.T) {
+	cfg := bootstrapCfg(t)
+	if err := handlerFor(cfg).CreateUser("erin", RoleAdmin, "erin-password", false); err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("env-pw"), bcrypt.MinCost)
+	cfg.Users["erin"] = string(hash)
+	h := handlerFor(cfg)
+	if _, err := h.Login("erin", "env-pw"); err != nil {
+		t.Errorf("env password: %v", err)
+	}
+	if h.IsAdmin("erin") {
+		t.Error("shadowed managed role still applies")
+	}
+}
+
+func TestLegacyDeleteRuleOnlyForEnvUsers(t *testing.T) {
+	cfg := bootstrapCfg(t)
+	cfg.Admins = nil // nobody in RGSTR_ADMINS: env users may delete
+	h := handlerFor(cfg)
+	h.CreateUser("frank", RoleUser, "frank-password", false)
+	if !h.Can("alice", "app", "delete") {
+		t.Error("env user without RGSTR_ADMINS cannot delete")
+	}
+	if h.Can("frank", "app", "delete") {
+		t.Error("managed user got the legacy delete right")
+	}
+}

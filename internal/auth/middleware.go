@@ -279,7 +279,8 @@ func (h *Handler) AuthEnabled() bool { return h.cfg.AuthEnabled }
 // ─── Roles ───────────────────────────────────────────────────────────────────
 
 // Can reports whether subject ("" = anonymous) may perform action (pull,
-// push, delete) on repo right now.
+// push, delete) on repo right now. Deleted users lose access immediately,
+// even with an unexpired token.
 func (h *Handler) Can(subject, repo, action string) bool {
 	if !h.cfg.AuthEnabled {
 		return true
@@ -287,7 +288,7 @@ func (h *Handler) Can(subject, repo, action string) bool {
 	if action == "pull" && h.isPublicRepo(repo) {
 		return true
 	}
-	if subject == "" {
+	if !h.creds.exists(subject) {
 		return false
 	}
 	return contains(h.UserActions(subject), action)
@@ -299,23 +300,45 @@ func (h *Handler) IsAdmin(subject string) bool {
 	if !h.cfg.AuthEnabled {
 		return true
 	}
-	return subject != "" && (contains(h.cfg.Admins, subject) || h.creds.isBootstrap(subject))
+	return h.creds.exists(subject) && h.Role(subject) == RoleAdmin
+}
+
+// Role returns the user's role: set in the admin for users created there;
+// from env otherwise (RGSTR_READONLY_USERS, RGSTR_ADMINS, the bootstrap
+// admin).
+func (h *Handler) Role(user string) string {
+	if role, ok := h.creds.managedRole(user); ok {
+		return role
+	}
+	switch {
+	case contains(h.cfg.ReadOnlyUsers, user):
+		return RoleReadOnly
+	case contains(h.cfg.Admins, user) || h.creds.isBootstrap(user):
+		return RoleAdmin
+	default:
+		return RoleUser
+	}
 }
 
 var allActions = []string{"pull", "push", "delete"}
 
 // UserActions returns the repository actions the user's role permits.
+// Env users with role "user" may also delete while RGSTR_ADMINS is empty
+// (the behaviour before roles existed).
 func (h *Handler) UserActions(username string) []string {
-	switch {
-	case !h.cfg.AuthEnabled:
+	if !h.cfg.AuthEnabled {
 		return allActions
-	case contains(h.cfg.ReadOnlyUsers, username):
-		return []string{"pull"}
-	case len(h.cfg.Admins) == 0 || contains(h.cfg.Admins, username) || h.creds.isBootstrap(username):
-		return allActions
-	default:
-		return []string{"pull", "push"}
 	}
+	switch h.Role(username) {
+	case RoleReadOnly:
+		return []string{"pull"}
+	case RoleAdmin:
+		return allActions
+	}
+	if _, managed := h.creds.managedRole(username); !managed && len(h.cfg.Admins) == 0 {
+		return allActions
+	}
+	return []string{"pull", "push"}
 }
 
 // FullAccess returns everything the user's role permits: their actions on
@@ -507,3 +530,64 @@ func errBody(code, msg string) map[string]interface{} {
 
 // Config returns the configuration the handler was built with.
 func (h *Handler) Config() *config.Config { return h.cfg }
+
+// ─── User management ─────────────────────────────────────────────────────────
+
+// UserInfo describes a user for the web admin.
+type UserInfo struct {
+	Name       string     `json:"name"`
+	Source     string     `json:"source"` // "env", "bootstrap" or "admin"
+	Role       string     `json:"role"`
+	Actions    []string   `json:"actions"`
+	MustChange bool       `json:"must_change"`
+	Changed    *time.Time `json:"password_changed,omitempty"`
+	Created    *time.Time `json:"created,omitempty"`
+}
+
+// Users lists every user.
+func (h *Handler) Users() []UserInfo {
+	var out []UserInfo
+	for _, name := range h.creds.names() {
+		u := UserInfo{Name: name, Source: "env", Role: h.Role(name), Actions: h.UserActions(name)}
+		if h.creds.isBootstrap(name) {
+			u.Source = "bootstrap"
+			u.MustChange = true
+		}
+		if sp, ok := h.creds.stored(name); ok {
+			u.MustChange = sp.MustChange
+			changed := sp.ChangedAt
+			u.Changed = &changed
+			if sp.Managed {
+				u.Source = "admin"
+				created := sp.CreatedAt
+				u.Created = &created
+			}
+		}
+		out = append(out, u)
+	}
+	return out
+}
+
+// CreateUser adds a user with a role. With mustChange the password is
+// temporary and must be replaced at the first sign-in.
+func (h *Handler) CreateUser(name, role, password string, mustChange bool) error {
+	return h.creds.createUser(name, role, password, mustChange)
+}
+
+// SetRole changes the role of a user created in the admin.
+func (h *Handler) SetRole(name, role string) error { return h.creds.setRole(name, role) }
+
+// DeleteUser removes a user created in the admin.
+func (h *Handler) DeleteUser(name string) error { return h.creds.deleteUser(name) }
+
+// ResetPassword sets a new password for any user. With mustChange it is
+// temporary.
+func (h *Handler) ResetPassword(name, password string, mustChange bool) error {
+	if !h.creds.exists(name) {
+		return ErrUserNotFound
+	}
+	if len(password) < minPasswordLen {
+		return ErrWeakPassword
+	}
+	return h.creds.setPassword(name, password, mustChange)
+}
