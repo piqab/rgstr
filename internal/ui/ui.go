@@ -1,346 +1,293 @@
 // Package ui serves a minimal web interface for the registry.
-// The entire UI is a single embedded HTML page with vanilla JS.
+// The UI is a single embedded HTML page with vanilla JS backed by a small
+// JSON API under /ui/api/.
 package ui
 
 import (
+	_ "embed"
+	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 
 	"rgstr/internal/auth"
-	"rgstr/internal/config"
+	"rgstr/internal/stats"
+	"rgstr/internal/storage"
 )
 
-// Handler serves the web UI.
+//go:embed index.html
+var page []byte
+
+// Handler serves the web UI and its API.
 type Handler struct {
-	cfg         *config.Config
-	authHandler *auth.Handler
+	auth    *auth.Handler
+	store   *storage.Filesystem
+	counter *stats.Counter
 }
 
 // New creates a UI handler.
-func New(cfg *config.Config, authHandler *auth.Handler) *Handler {
-	return &Handler{cfg: cfg, authHandler: authHandler}
+func New(authHandler *auth.Handler, store *storage.Filesystem, counter *stats.Counter) *Handler {
+	return &Handler{auth: authHandler, store: store, counter: counter}
 }
 
-// Mount registers the UI handler on mux.
+// Mount registers the UI handlers on mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("/ui", h.serve)
-	mux.HandleFunc("/ui/", h.serve)
+	mux.HandleFunc("/ui", h.servePage)
+	mux.HandleFunc("/ui/", h.servePage)
+	mux.HandleFunc("/ui/api/me", h.handleMe)
+	mux.HandleFunc("/ui/api/login", h.handleLogin)
+	mux.HandleFunc("/ui/api/repos", h.handleRepos)
 }
 
-func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) servePage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(page))
+	w.Write(page)
 }
 
-// page is the entire single-page UI.
-// Credentials are stored in sessionStorage and sent as Basic auth on every fetch.
-// When auth is disabled the login form is still shown but any credentials pass.
-const page = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>rgstr</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222}
-header{background:#1a1a2e;color:#fff;padding:14px 24px;display:flex;align-items:center;gap:12px}
-header h1{font-size:1.2rem;font-weight:600;letter-spacing:.05em}
-header span{font-size:.8rem;opacity:.5;margin-left:auto}
-#login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100}
-.login-box{background:#fff;border-radius:8px;padding:32px;width:320px;box-shadow:0 4px 24px rgba(0,0,0,.2)}
-.login-box h2{margin-bottom:20px;font-size:1.1rem}
-.login-box label{display:block;font-size:.85rem;margin-bottom:4px;color:#555}
-.login-box input{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:.95rem;margin-bottom:14px}
-.login-box button{width:100%;padding:9px;background:#1a1a2e;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.95rem}
-.login-box .err{color:#c00;font-size:.82rem;margin-top:8px;display:none}
-#app{max-width:1100px;margin:0 auto;padding:24px}
-.stats-bar{display:flex;gap:16px;margin-bottom:24px}
-.stat-card{background:#fff;border-radius:8px;padding:16px 24px;flex:1;box-shadow:0 1px 4px rgba(0,0,0,.08)}
-.stat-card .val{font-size:2rem;font-weight:700;color:#1a1a2e}
-.stat-card .lbl{font-size:.8rem;color:#888;margin-top:2px}
-.repo-grid{display:flex;flex-direction:column;gap:12px}
-.repo-card{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
-.repo-header{padding:14px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
-.repo-header:hover{background:#fafafa}
-.repo-name{font-weight:600;font-size:.95rem;flex:1}
-.repo-pulls{font-size:.82rem;color:#888}
-.repo-arrow{transition:transform .2s;font-size:.8rem;color:#aaa}
-.repo-body{display:none;border-top:1px solid #f0f0f0;padding:12px 18px}
-.repo-body.open{display:block}
-.tag-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f5f5f5}
-.tag-row:last-child{border:none}
-.tag-name{font-family:monospace;font-size:.88rem;flex:1}
-.tag-digest{font-family:monospace;font-size:.75rem;color:#999;flex:2;word-break:break-all}
-.tag-size{font-size:.78rem;color:#aaa;white-space:nowrap}
-.btn-del{background:none;border:1px solid #e0e0e0;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:.78rem;color:#c00}
-.btn-del:hover{background:#fff0f0;border-color:#c00}
-.loading{color:#999;font-size:.9rem;padding:16px 0}
-.empty{color:#bbb;font-size:.85rem;padding:8px 0}
-.search{margin-bottom:16px}
-.search input{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:6px;font-size:.9rem}
-#toast{position:fixed;bottom:24px;right:24px;background:#222;color:#fff;padding:10px 18px;border-radius:6px;font-size:.88rem;opacity:0;transition:opacity .3s;pointer-events:none}
-#toast.show{opacity:1}
-</style>
-</head>
-<body>
+// ─── Session ──────────────────────────────────────────────────────────────────
 
-<div id="login-overlay">
-  <div class="login-box">
-    <h2>rgstr &mdash; sign in</h2>
-    <label>Username</label>
-    <input id="li-user" type="text" autocomplete="username">
-    <label>Password</label>
-    <input id="li-pass" type="password" autocomplete="current-password">
-    <button onclick="doLogin()">Sign in</button>
-    <div class="err" id="li-err">Invalid credentials</div>
-  </div>
-</div>
-
-<header>
-  <h1>rgstr</h1>
-  <span id="hdr-user" style="font-size:.82rem;opacity:.7;margin-left:auto"></span>
-  <button onclick="logout()" id="btn-logout" style="display:none;margin-left:12px;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:.82rem">Sign out</button>
-</header>
-
-<div id="app" style="display:none">
-  <div class="stats-bar">
-    <div class="stat-card"><div class="val" id="s-repos">—</div><div class="lbl">repositories</div></div>
-    <div class="stat-card"><div class="val" id="s-pulls">—</div><div class="lbl">total pulls</div></div>
-  </div>
-  <div class="search"><input type="search" placeholder="Filter repositories…" oninput="filterRepos(this.value)"></div>
-  <div class="repo-grid" id="repo-grid"><div class="loading">Loading…</div></div>
-</div>
-
-<div id="toast"></div>
-
-<script>
-'use strict';
-
-let creds = '';   // base64(user:pass)
-let allRepos = [];
-
-// ── Auth ──────────────────────────────────────────────────────────────────────
-
-async function doLogin() {
-  const user = document.getElementById('li-user').value;
-  const pass = document.getElementById('li-pass').value;
-  const b64 = btoa(user + ':' + pass);
-  const res = await fetch('/stats', {headers: {Authorization: 'Basic ' + b64}});
-  if (res.status === 401) {
-    document.getElementById('li-err').style.display = 'block';
-    return;
-  }
-  creds = b64;
-  sessionStorage.setItem('rgstr_creds', b64);
-  sessionStorage.setItem('rgstr_user', user);
-  document.getElementById('li-err').style.display = 'none';
-  document.getElementById('login-overlay').style.display = 'none';
-  document.getElementById('hdr-user').textContent = user;
-  document.getElementById('btn-logout').style.display = 'block';
-  document.getElementById('app').style.display = 'block';
-  loadAll();
+type meResponse struct {
+	AuthEnabled bool     `json:"auth_enabled"`
+	User        string   `json:"user,omitempty"`
+	Actions     []string `json:"actions"`
 }
 
-function api(path, opts) {
-  opts = opts || {};
-  opts.headers = opts.headers || {};
-  if (creds) opts.headers['Authorization'] = 'Basic ' + creds;
-  return fetch(path, opts);
+// handleMe reports whether auth is on and, if the request carries a valid
+// token, who the user is and which repository actions they may perform.
+func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	resp := meResponse{AuthEnabled: h.auth.AuthEnabled(), Actions: []string{}}
+	if !resp.AuthEnabled {
+		resp.Actions = h.auth.UserActions("")
+	} else if subject, access, ok := h.auth.Authenticate(r); ok && subject != "" {
+		resp.User = subject
+		resp.Actions = repoActions(access)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
-// ── Data loading ──────────────────────────────────────────────────────────────
-
-async function loadAll() {
-  const [statsRes] = await Promise.all([api('/stats')]);
-  if (!statsRes.ok) { toast('Failed to load stats'); return; }
-  const stats = await statsRes.json();
-
-  document.getElementById('s-repos').textContent = stats.total_repos;
-  document.getElementById('s-pulls').textContent = stats.total_pulls;
-
-  // Build pull map
-  const pullMap = {};
-  (stats.repositories || []).forEach(r => { pullMap[r.name] = r.pulls; });
-
-  // Load all repos with tags from catalog
-  const catRes = await api('/v2/_catalog?n=1000');
-  const cat = catRes.ok ? await catRes.json() : {repositories: []};
-  const repos = cat.repositories || [];
-
-  // Load tags for each repo in parallel (batch of 10)
-  const results = [];
-  for (let i = 0; i < repos.length; i += 10) {
-    const batch = repos.slice(i, i + 10);
-    const settled = await Promise.all(batch.map(async name => {
-      const r = await api('/v2/' + name + '/tags/list');
-      const j = r.ok ? await r.json() : {tags: []};
-      return {name, tags: j.tags || [], pulls: pullMap[name] || 0};
-    }));
-    results.push(...settled);
-  }
-
-  allRepos = results.filter(r => r.tags && r.tags.length > 0);
-  renderRepos(allRepos);
+// handleLogin exchanges a username and password for a session token, so the
+// browser keeps a short-lived token instead of the password.
+func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
+		return
+	}
+	token, ok := h.auth.Login(req.Username, req.Password)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":   token,
+		"user":    req.Username,
+		"actions": h.auth.UserActions(req.Username),
+	})
 }
 
-// ── Rendering ─────────────────────────────────────────────────────────────────
-
-function renderRepos(repos) {
-  const grid = document.getElementById('repo-grid');
-  if (!repos.length) { grid.innerHTML = '<div class="empty">No repositories found.</div>'; return; }
-  grid.innerHTML = repos.map(repoCard).join('');
+// repoActions lists the actions access grants on every repository.
+func repoActions(access []auth.Access) []string {
+	out := []string{}
+	for _, act := range []string{"pull", "push", "delete"} {
+		if auth.Allowed(access, "repository", "*", act) {
+			out = append(out, act)
+		}
+	}
+	return out
 }
 
-function repoCard(r) {
-  const tags = (r.tags || []).map(t => tagRow(r.name, t)).join('');
-  return ` + "`" + `
-  <div class="repo-card">
-    <div class="repo-header" onclick="toggleRepo(this)">
-      <span class="repo-name">${esc(r.name)}</span>
-      <span class="repo-pulls">${r.pulls} pulls</span>
-      <span class="repo-arrow">▶</span>
-    </div>
-    <div class="repo-body">
-      ${tags || '<div class="empty">No tags.</div>'}
-    </div>
-  </div>` + "`" + `;
+// ─── Repositories ─────────────────────────────────────────────────────────────
+
+type platformInfo struct {
+	OS           string `json:"os"`
+	Architecture string `json:"architecture"`
+	Variant      string `json:"variant,omitempty"`
+	Size         int64  `json:"size"`
 }
 
-function tagRow(repo, tag) {
-  return ` + "`" + `
-  <div class="tag-row">
-    <span class="tag-name">:${esc(tag)}</span>
-    <span class="tag-digest">loading…</span>
-    <span class="tag-size"></span>
-    <button class="btn-del" onclick="deleteTag(this,'${esc(repo)}','${esc(tag)}')">delete</button>
-  </div>` + "`" + `;
+type tagInfo struct {
+	Name      string         `json:"name"`
+	Digest    string         `json:"digest,omitempty"`
+	MediaType string         `json:"media_type,omitempty"`
+	Size      int64          `json:"size"`
+	Platforms []platformInfo `json:"platforms"`
+	Error     string         `json:"error,omitempty"`
 }
 
-function toggleRepo(header) {
-  const body = header.nextElementSibling;
-  const arrow = header.querySelector('.repo-arrow');
-  const open = body.classList.toggle('open');
-  arrow.style.transform = open ? 'rotate(90deg)' : '';
-  if (open) loadTagDetails(header);
+type repoInfo struct {
+	Name  string    `json:"name"`
+	Pulls int64     `json:"pulls"`
+	Tags  []tagInfo `json:"tags"`
 }
 
-async function loadTagDetails(header) {
-  const repo = header.querySelector('.repo-name').textContent;
-  const body = header.nextElementSibling;
-  const rows = body.querySelectorAll('.tag-row');
-  for (const row of rows) {
-    const tag = row.querySelector('.tag-name').textContent.slice(1);
-    const digestEl = row.querySelector('.tag-digest');
-    const sizeEl = row.querySelector('.tag-size');
-    if (digestEl.textContent !== 'loading…') continue;
-    try {
-      const res = await api('/v2/' + repo + '/manifests/' + tag, {
-        headers: {'Accept': 'application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json'}
-      });
-      if (!res.ok) { digestEl.textContent = 'error'; continue; }
-      const digest = res.headers.get('Docker-Content-Digest') || '—';
-      const json = await res.json();
-      const size = calcSize(json);
-      digestEl.textContent = digest.slice(0, 19) + '…';
-      digestEl.title = digest;
-      sizeEl.textContent = size ? fmtBytes(size) : '';
-    } catch { digestEl.textContent = 'error'; }
-  }
+type reposResponse struct {
+	Repositories []repoInfo `json:"repositories"`
+	TotalPulls   int64      `json:"total_pulls"`
 }
 
-function calcSize(manifest) {
-  let total = 0;
-  if (manifest.config && manifest.config.size) total += manifest.config.size;
-  (manifest.layers || []).forEach(l => { if (l.size) total += l.size; });
-  return total;
+// handleRepos returns every tagged repository with its tags, digests, sizes
+// and platforms in one response.
+func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if h.auth.AuthEnabled() {
+		_, access, ok := h.auth.Authenticate(r)
+		if !ok || !auth.Allowed(access, "registry", "catalog", "*") {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+			return
+		}
+	}
+
+	names, err := h.store.ListRepositories()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	snap := h.counter.Snapshot()
+
+	resp := reposResponse{Repositories: []repoInfo{}}
+	for _, name := range names {
+		resp.TotalPulls += snap.Pulls[name]
+		tags, _ := h.store.ListTags(name)
+		if len(tags) == 0 {
+			continue
+		}
+		repo := repoInfo{Name: name, Pulls: snap.Pulls[name]}
+		for _, tag := range tags {
+			repo.Tags = append(repo.Tags, h.describeTag(name, tag))
+		}
+		resp.Repositories = append(resp.Repositories, repo)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
-// ── Delete ────────────────────────────────────────────────────────────────────
-
-async function deleteTag(btn, repo, tag) {
-  if (!confirm('Delete ' + repo + ':' + tag + '?\nThis will remove the manifest. Blobs are cleaned up by GC.')) return;
-  btn.disabled = true;
-  // 1. Get digest
-  const headRes = await api('/v2/' + repo + '/manifests/' + tag, {
-    headers: {'Accept': 'application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json'}
-  });
-  if (!headRes.ok) { toast('Could not resolve manifest digest: ' + headRes.status); btn.disabled = false; return; }
-  const digest = headRes.headers.get('Docker-Content-Digest');
-  if (!digest) { toast('No digest in response'); btn.disabled = false; return; }
-  // 2. Delete by digest
-  const delRes = await api('/v2/' + repo + '/manifests/' + digest, {method: 'DELETE'});
-  if (delRes.ok || delRes.status === 202) {
-    toast('Deleted ' + repo + ':' + tag);
-    await loadAll();
-  } else {
-    toast('Delete failed: ' + delRes.status);
-    btn.disabled = false;
-  }
+type descriptor struct {
+	MediaType string         `json:"mediaType"`
+	Digest    storage.Digest `json:"digest"`
+	Size      int64          `json:"size"`
+	Platform  *platformInfo  `json:"platform,omitempty"`
 }
 
-// ── Logout ────────────────────────────────────────────────────────────────────
-
-function logout() {
-  sessionStorage.removeItem('rgstr_creds');
-  sessionStorage.removeItem('rgstr_user');
-  creds = '';
-  document.getElementById('app').style.display = 'none';
-  document.getElementById('login-overlay').style.display = 'flex';
-  document.getElementById('li-pass').value = '';
-  document.getElementById('btn-logout').style.display = 'none';
-  document.getElementById('hdr-user').textContent = '';
+type manifestDoc struct {
+	MediaType string       `json:"mediaType"`
+	Config    *descriptor  `json:"config"`
+	Layers    []descriptor `json:"layers"`
+	Manifests []descriptor `json:"manifests"`
 }
 
-// ── Filter ────────────────────────────────────────────────────────────────────
+// describeTag resolves a tag to its digest, size and platforms. For a
+// multi-platform index, each child manifest is sized separately and the tag
+// size counts every distinct blob once.
+func (h *Handler) describeTag(repo, tag string) tagInfo {
+	info := tagInfo{Name: tag, Platforms: []platformInfo{}}
+	m, err := h.store.GetManifest(repo, tag)
+	if err != nil {
+		info.Error = err.Error()
+		return info
+	}
+	info.Digest = string(m.Digest)
+	info.MediaType = m.ContentType
 
-function filterRepos(q) {
-  const filtered = q ? allRepos.filter(r => r.name.includes(q)) : allRepos;
-  renderRepos(filtered);
+	var doc manifestDoc
+	if err := json.Unmarshal(m.Content, &doc); err != nil {
+		info.Error = "unreadable manifest"
+		return info
+	}
+
+	if len(doc.Manifests) == 0 {
+		blobs := imageBlobs(&doc)
+		info.Size = sumSizes(blobs)
+		if p := h.configPlatform(&doc); p != nil {
+			p.Size = info.Size
+			info.Platforms = append(info.Platforms, *p)
+		}
+		return info
+	}
+
+	seen := map[storage.Digest]int64{}
+	for _, child := range doc.Manifests {
+		// Skip attestation manifests (buildx provenance/SBOM).
+		if child.Platform == nil || child.Platform.OS == "unknown" {
+			continue
+		}
+		p := *child.Platform
+		if !child.Digest.Valid() {
+			info.Platforms = append(info.Platforms, p)
+			continue
+		}
+		if cm, err := h.store.GetManifest(repo, string(child.Digest)); err == nil {
+			var cd manifestDoc
+			if json.Unmarshal(cm.Content, &cd) == nil {
+				blobs := imageBlobs(&cd)
+				p.Size = sumSizes(blobs)
+				for d, size := range blobs {
+					seen[d] = size
+				}
+			}
+		}
+		info.Platforms = append(info.Platforms, p)
+	}
+	info.Size = sumSizes(seen)
+	return info
 }
 
-// ── Utils ─────────────────────────────────────────────────────────────────────
-
-function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
-function fmtBytes(b) {
-  if (b < 1024) return b + ' B';
-  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
-  if (b < 1024*1024*1024) return (b/1024/1024).toFixed(1) + ' MB';
-  return (b/1024/1024/1024).toFixed(2) + ' GB';
+// imageBlobs returns the config and layer blobs of an image manifest.
+func imageBlobs(doc *manifestDoc) map[storage.Digest]int64 {
+	blobs := map[storage.Digest]int64{}
+	if doc.Config != nil {
+		blobs[doc.Config.Digest] = doc.Config.Size
+	}
+	for _, l := range doc.Layers {
+		blobs[l.Digest] = l.Size
+	}
+	return blobs
 }
 
-let toastTimer;
-function toast(msg) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+func sumSizes(blobs map[storage.Digest]int64) int64 {
+	var total int64
+	for _, size := range blobs {
+		total += size
+	}
+	return total
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// configPlatform reads os/architecture from a single-platform image's config
+// blob. Returns nil when the config is missing or not an image config.
+func (h *Handler) configPlatform(doc *manifestDoc) *platformInfo {
+	if doc.Config == nil || !doc.Config.Digest.Valid() || !strings.Contains(doc.Config.MediaType, "config") {
+		return nil
+	}
+	f, err := h.store.OpenBlob(doc.Config.Digest)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var p platformInfo
+	if err := json.NewDecoder(io.LimitReader(f, 1<<20)).Decode(&p); err != nil || p.OS == "" {
+		return nil
+	}
+	return &p
+}
 
-(function init() {
-  const saved = sessionStorage.getItem('rgstr_creds');
-  const user  = sessionStorage.getItem('rgstr_user');
-  if (saved) {
-    creds = saved;
-    document.getElementById('login-overlay').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    document.getElementById('btn-logout').style.display = 'block';
-    if (user) document.getElementById('hdr-user').textContent = user;
-    loadAll();
-  }
-  // Allow Enter key in login form
-  ['li-user','li-pass'].forEach(id => {
-    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-  });
-})();
-</script>
-</body>
-</html>`
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}

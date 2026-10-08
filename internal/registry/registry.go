@@ -73,7 +73,7 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 
 	mux.HandleFunc("/stats", reg.handleStats)
 
-	ui.New(reg.cfg, reg.authHandler).Mount(mux)
+	ui.New(reg.authHandler, reg.store, reg.counter).Mount(mux)
 }
 
 // dispatch is the central router.
@@ -625,7 +625,8 @@ func (reg *Registry) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reg.cfg.AuthEnabled {
-		if _, ok := reg.authHandler.CheckBasic(r); !ok {
+		_, access, ok := reg.authHandler.Authenticate(r)
+		if !ok || !auth.Allowed(access, "registry", "catalog", "*") {
 			w.Header().Set("WWW-Authenticate", `Basic realm="rgstr"`)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)

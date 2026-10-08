@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rgstr</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222}
+header{background:#1a1a2e;color:#fff;padding:14px 24px;display:flex;align-items:center;gap:12px}
+header h1{font-size:1.2rem;font-weight:600;letter-spacing:.05em}
+#hdr-user{font-size:.82rem;opacity:.7;margin-left:auto}
+#btn-logout{display:none;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:.82rem}
+#login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:100}
+#login-overlay.show{display:flex}
+.login-box{background:#fff;border-radius:8px;padding:32px;width:320px;max-width:calc(100% - 32px);box-shadow:0 4px 24px rgba(0,0,0,.2)}
+.login-box h2{margin-bottom:20px;font-size:1.1rem}
+.login-box label{display:block;font-size:.85rem;margin-bottom:4px;color:#555}
+.login-box input{width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-size:.95rem;margin-bottom:14px}
+.login-box button{width:100%;padding:9px;background:#1a1a2e;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.95rem}
+.login-box .err{color:#c00;font-size:.82rem;margin-top:8px;display:none}
+#app{max-width:1100px;margin:0 auto;padding:24px;display:none}
+.stats-bar{display:flex;gap:16px;margin-bottom:24px}
+.stat-card{background:#fff;border-radius:8px;padding:16px 24px;flex:1;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.stat-card .val{font-size:2rem;font-weight:700;color:#1a1a2e}
+.stat-card .lbl{font-size:.8rem;color:#888;margin-top:2px}
+.repo-grid{display:flex;flex-direction:column;gap:12px}
+.repo-card{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
+.repo-header{padding:14px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+.repo-header:hover{background:#fafafa}
+.repo-name{font-weight:600;font-size:.95rem;flex:1;word-break:break-all}
+.repo-meta{font-size:.82rem;color:#888;white-space:nowrap}
+.repo-arrow{transition:transform .2s;font-size:.8rem;color:#aaa}
+.repo-card.open .repo-arrow{transform:rotate(90deg)}
+.repo-body{display:none;border-top:1px solid #f0f0f0;padding:12px 18px}
+.repo-card.open .repo-body{display:block}
+.tag-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;padding:8px 0;border-bottom:1px solid #f5f5f5}
+.tag-row:last-child{border:none}
+.tag-name{font-family:monospace;font-size:.88rem;min-width:120px}
+.tag-digest{font-family:monospace;font-size:.75rem;color:#999}
+.tag-same{font-size:.75rem;color:#aaa}
+.platforms{display:flex;flex-wrap:wrap;gap:4px;flex:1}
+.plat{font-size:.72rem;background:#f0f0f5;color:#444;border-radius:3px;padding:2px 6px;white-space:nowrap}
+.tag-size{font-size:.78rem;color:#888;white-space:nowrap}
+.tag-err{font-size:.78rem;color:#c00;flex:1}
+.btn-del{background:none;border:1px solid #e0e0e0;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:.78rem;color:#c00}
+.btn-del:hover{background:#fff0f0;border-color:#c00}
+.btn-del:disabled{opacity:.5;cursor:default}
+.loading{color:#999;font-size:.9rem;padding:16px 0}
+.empty{color:#bbb;font-size:.85rem;padding:8px 0}
+.search{margin-bottom:16px}
+.search input{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:6px;font-size:.9rem}
+#toast{position:fixed;bottom:24px;right:24px;background:#222;color:#fff;padding:10px 18px;border-radius:6px;font-size:.88rem;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+@media (max-width:600px){#app{padding:16px}.stats-bar{gap:8px}.stat-card{padding:12px 16px}}
+</style>
+</head>
+<body>
+
+<div id="login-overlay">
+  <form class="login-box" id="login-form">
+    <h2>rgstr &mdash; sign in</h2>
+    <label for="li-user">Username</label>
+    <input id="li-user" type="text" autocomplete="username" required>
+    <label for="li-pass">Password</label>
+    <input id="li-pass" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <div class="err" id="li-err"></div>
+  </form>
+</div>
+
+<header>
+  <h1>rgstr</h1>
+  <span id="hdr-user"></span>
+  <button id="btn-logout">Sign out</button>
+</header>
+
+<div id="app">
+  <div class="stats-bar">
+    <div class="stat-card"><div class="val" id="s-repos">—</div><div class="lbl">repositories</div></div>
+    <div class="stat-card"><div class="val" id="s-pulls">—</div><div class="lbl">total pulls</div></div>
+  </div>
+  <div class="search"><input type="search" id="filter" placeholder="Filter repositories…"></div>
+  <div class="repo-grid" id="repo-grid"><div class="loading">Loading…</div></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// The session token (never the password) lives in sessionStorage.
+let token = sessionStorage.getItem('rgstr_token') || '';
+let actions = [];
+let allRepos = [];
+const openRepos = new Set();
+
+const $ = id => document.getElementById(id);
+
+// ── Session ───────────────────────────────────────────────────────────────────
+
+function api(path, opts) {
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  return fetch(path, opts);
+}
+
+async function boot() {
+  const res = await api('/ui/api/me');
+  const me = await res.json();
+  if (!me.auth_enabled) {
+    actions = me.actions;
+    $('hdr-user').textContent = 'auth disabled';
+    showApp();
+  } else if (me.user) {
+    actions = me.actions;
+    $('hdr-user').textContent = me.user;
+    $('btn-logout').style.display = 'block';
+    showApp();
+  } else {
+    showLogin(token ? 'Session expired, please sign in again' : '');
+  }
+}
+
+async function doLogin(e) {
+  e.preventDefault();
+  const res = await fetch('/ui/api/login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: $('li-user').value, password: $('li-pass').value}),
+  });
+  if (!res.ok) { showLoginError('Invalid credentials'); return; }
+  const s = await res.json();
+  token = s.token;
+  actions = s.actions;
+  sessionStorage.setItem('rgstr_token', token);
+  $('li-pass').value = '';
+  $('login-overlay').classList.remove('show');
+  $('hdr-user').textContent = s.user;
+  $('btn-logout').style.display = 'block';
+  showApp();
+}
+
+function showApp() {
+  $('app').style.display = 'block';
+  loadAll();
+}
+
+function showLogin(msg) {
+  token = '';
+  sessionStorage.removeItem('rgstr_token');
+  $('app').style.display = 'none';
+  $('btn-logout').style.display = 'none';
+  $('hdr-user').textContent = '';
+  $('login-overlay').classList.add('show');
+  showLoginError(msg);
+  $('li-user').focus();
+}
+
+function showLoginError(msg) {
+  $('li-err').textContent = msg || '';
+  $('li-err').style.display = msg ? 'block' : 'none';
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+
+async function loadAll() {
+  const res = await api('/ui/api/repos');
+  if (res.status === 401) { showLogin('Session expired, please sign in again'); return; }
+  if (!res.ok) { toast('Failed to load repositories: ' + res.status); return; }
+  const data = await res.json();
+  allRepos = data.repositories;
+  $('s-repos').textContent = allRepos.length;
+  $('s-pulls').textContent = data.total_pulls;
+  applyFilter();
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+function applyFilter() {
+  const q = $('filter').value.trim().toLowerCase();
+  const repos = q ? allRepos.filter(r => r.name.toLowerCase().includes(q)) : allRepos;
+  const grid = $('repo-grid');
+  if (!repos.length) { grid.innerHTML = '<div class="empty">No repositories found.</div>'; return; }
+  grid.innerHTML = repos.map(repoCard).join('');
+}
+
+function repoCard(r) {
+  const n = r.tags.length;
+  return `
+  <div class="repo-card${openRepos.has(r.name) ? ' open' : ''}" data-repo="${esc(r.name)}">
+    <div class="repo-header">
+      <span class="repo-name">${esc(r.name)}</span>
+      <span class="repo-meta">${n} tag${n === 1 ? '' : 's'} · ${r.pulls} pulls</span>
+      <span class="repo-arrow">▶</span>
+    </div>
+    <div class="repo-body">${r.tags.map(t => tagRow(r, t)).join('')}</div>
+  </div>`;
+}
+
+function tagRow(repo, t) {
+  const canDelete = actions.includes('delete');
+  const del = canDelete
+    ? `<button class="btn-del" data-tag="${esc(t.name)}">delete</button>` : '';
+  if (t.error) {
+    return `<div class="tag-row"><span class="tag-name">:${esc(t.name)}</span>
+      <span class="tag-err">${esc(t.error)}</span>${del}</div>`;
+  }
+  const same = sameDigestTags(repo, t).map(x => ':' + x);
+  const plats = t.platforms.map(p => {
+    const name = p.os + '/' + p.architecture + (p.variant ? '/' + p.variant : '');
+    const size = t.platforms.length > 1 && p.size ? ' · ' + fmtBytes(p.size) : '';
+    return `<span class="plat">${esc(name + size)}</span>`;
+  }).join('');
+  return `
+  <div class="tag-row">
+    <span class="tag-name">:${esc(t.name)}</span>
+    <span class="tag-digest" title="${esc(t.digest)}">${esc(t.digest.slice(0, 19))}…</span>
+    ${same.length ? `<span class="tag-same">same as ${esc(same.join(', '))}</span>` : ''}
+    <span class="platforms">${plats}</span>
+    <span class="tag-size">${t.size ? fmtBytes(t.size) : ''}</span>
+    ${del}
+  </div>`;
+}
+
+function sameDigestTags(repo, t) {
+  return repo.tags.filter(x => x.name !== t.name && x.digest && x.digest === t.digest).map(x => x.name);
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+async function deleteTag(btn, repoName, tag) {
+  const repo = allRepos.find(r => r.name === repoName);
+  const t = repo && repo.tags.find(x => x.name === tag);
+  const others = repo && t ? sameDigestTags(repo, t) : [];
+  const note = others.length
+    ? 'The image stays available as :' + others.join(', :') + '.'
+    : 'No other tag points to this image; its data will be removed by GC.';
+  if (!confirm('Delete tag ' + repoName + ':' + tag + '?\n' + note)) return;
+
+  btn.disabled = true;
+  const res = await api('/v2/' + repoName + '/manifests/' + encodeURIComponent(tag), {method: 'DELETE'});
+  if (res.ok) {
+    toast('Deleted ' + repoName + ':' + tag);
+    await loadAll();
+  } else if (res.status === 401) {
+    showLogin('Session expired, please sign in again');
+  } else {
+    toast(res.status === 403 ? 'You are not allowed to delete' : 'Delete failed: ' + res.status);
+    btn.disabled = false;
+  }
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+
+$('repo-grid').addEventListener('click', e => {
+  const card = e.target.closest('.repo-card');
+  if (!card) return;
+  const repo = card.dataset.repo;
+  const btn = e.target.closest('.btn-del');
+  if (btn) { deleteTag(btn, repo, btn.dataset.tag); return; }
+  if (e.target.closest('.repo-header')) {
+    if (card.classList.toggle('open')) openRepos.add(repo); else openRepos.delete(repo);
+  }
+});
+$('filter').addEventListener('input', applyFilter);
+$('login-form').addEventListener('submit', doLogin);
+$('btn-logout').addEventListener('click', () => showLogin(''));
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function fmtBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1024*1024*1024) return (b/1024/1024).toFixed(1) + ' MB';
+  return (b/1024/1024/1024).toFixed(2) + ' GB';
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+boot();
+</script>
+</body>
+</html>

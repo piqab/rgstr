@@ -26,12 +26,15 @@ const (
 //
 // Public / private model (when AuthEnabled = true):
 //
-//	                 | pull | push |
-//	 public repo     |  ✓   |  ✗   |  anonymous pull allowed
-//	 private repo    |  ✗   |  ✗   |  credentials required for everything
-//	 authenticated   |  ✓   |  ✓   |  valid token grants full access
+//	                | pull | push | delete |
+//	anonymous       |  public repos only     |
+//	read-only user  |  ✓   |  ✗   |   ✗    |  RGSTR_READONLY_USERS
+//	user            |  ✓   |  ✓   |   ✗    |  (✓ when RGSTR_ADMINS is empty)
+//	admin           |  ✓   |  ✓   |   ✓    |  RGSTR_ADMINS
 //
-// Public repos are configured via RGSTR_PUBLIC_REPOS (glob patterns).
+// Every request is checked against the access claims of its token (or the
+// user's role for Basic auth). Public repos are configured via
+// RGSTR_PUBLIC_REPOS (glob patterns).
 type Handler struct {
 	cfg      *config.Config
 	tokenSvc *TokenService
@@ -59,27 +62,41 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to authenticate with the provided credentials / token.
-	subject, access, ok := h.tryAuthenticate(r)
+	subject, access, ok := h.Authenticate(r)
 	if ok {
-		ctx := context.WithValue(r.Context(), ctxSubject, subject)
-		ctx = context.WithValue(ctx, ctxAccess, access)
-		h.inner.ServeHTTP(w, r.WithContext(ctx))
-		return
+		typ, name, action := requiredAccess(r)
+		if typ == "" || Allowed(access, typ, name, action) {
+			ctx := context.WithValue(r.Context(), ctxSubject, subject)
+			ctx = context.WithValue(ctx, ctxAccess, access)
+			h.inner.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
 	}
 
-	// No valid credentials — allow anonymous read on public repositories.
+	// No sufficient grant — allow anonymous read on public repositories.
 	if h.isPublicReadRequest(r) {
 		h.inner.ServeHTTP(w, r)
 		return
 	}
 
-	// Otherwise challenge the client to authenticate.
+	// Valid password, but the user's role forbids this action. Re-asking for
+	// credentials would not help, so deny outright.
+	if ok && strings.HasPrefix(r.Header.Get("Authorization"), "Basic ") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(errBody("DENIED", "requested access to the resource is denied"))
+		return
+	}
+
+	// Otherwise challenge the client to (re-)authenticate. For a Bearer token
+	// that lacks the scope, the challenge names the scope to request.
 	h.challenge(w, r)
 }
 
-// tryAuthenticate parses the Authorization header and returns the subject and
+// Authenticate parses the Authorization header and returns the subject and
 // access claims if authentication succeeds. It does NOT write any response.
-func (h *Handler) tryAuthenticate(r *http.Request) (subject string, access []Access, ok bool) {
+// Basic auth yields the user's full role-based access.
+func (h *Handler) Authenticate(r *http.Request) (subject string, access []Access, ok bool) {
 	hdr := r.Header.Get("Authorization")
 	switch {
 	case strings.HasPrefix(hdr, "Bearer "):
@@ -94,8 +111,7 @@ func (h *Handler) tryAuthenticate(r *http.Request) (subject string, access []Acc
 		if err != nil || !h.checkPassword(user, pass) {
 			return "", nil, false
 		}
-		// Basic auth grants full access (no scope restriction).
-		return user, nil, true
+		return user, h.FullAccess(user), true
 	}
 	return "", nil, false
 }
@@ -111,6 +127,11 @@ func (h *Handler) tryAuthenticate(r *http.Request) (subject string, access []Acc
 func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 	var username, password string
 
+	// GET passes parameters in the query; containerd's OAuth2 flow POSTs them
+	// as a form (grant_type=password&username=&password=&scope=).
+	// ParseForm merges both into r.Form.
+	r.ParseForm()
+
 	if hdr := r.Header.Get("Authorization"); strings.HasPrefix(hdr, "Basic ") {
 		user, pass, err := parseBasic(hdr)
 		if err == nil {
@@ -118,26 +139,36 @@ func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if username == "" {
-		q := r.URL.Query()
-		username = q.Get("account")
-		password = q.Get("password")
+		username = r.Form.Get("username")
+		if username == "" {
+			username = r.Form.Get("account")
+		}
+		password = r.Form.Get("password")
 	}
 
 	authenticated := !h.cfg.AuthEnabled || h.checkPassword(username, password)
 
-	// Parse requested scope.
-	scope := r.URL.Query().Get("scope")
-	requestedAccess := ParseScope(scope)
+	// Parse requested scopes. Clients may repeat scope= or separate scopes
+	// with spaces.
+	var requestedAccess []Access
+	for _, raw := range r.Form["scope"] {
+		for _, scope := range strings.Fields(raw) {
+			requestedAccess = append(requestedAccess, ParseScope(scope)...)
+		}
+	}
 
 	var grantedAccess []Access
 
-	if authenticated {
-		// Authenticated users get exactly what they asked for.
+	if !h.cfg.AuthEnabled {
 		grantedAccess = requestedAccess
+	} else if authenticated {
+		// Authenticated users get what they asked for, limited by their role.
+		grantedAccess = h.grantForUser(username, requestedAccess)
 	} else {
 		// Unauthenticated: grant pull-only on public repos, drop the rest.
 		for _, a := range requestedAccess {
-			if a.Type != "repository" || !h.isPublicRepo(a.Name) {
+			// A wildcard name could match more than the public patterns allow.
+			if a.Type != "repository" || strings.ContainsAny(a.Name, "*?[") || !h.isPublicRepo(a.Name) {
 				continue
 			}
 			// Only grant pull, even if the client asked for push too.
@@ -212,18 +243,96 @@ func (h *Handler) checkPassword(username, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-// CheckBasic validates a Basic Authorization header against the configured users.
-// Returns the username and true on success.
-func (h *Handler) CheckBasic(r *http.Request) (string, bool) {
-	hdr := r.Header.Get("Authorization")
-	if !strings.HasPrefix(hdr, "Basic ") {
+// Login checks credentials and issues a token carrying the user's full
+// role-based access. Used by the web UI so it never stores the password.
+func (h *Handler) Login(username, password string) (token string, ok bool) {
+	if !h.checkPassword(username, password) {
 		return "", false
 	}
-	user, pass, err := parseBasic(hdr)
+	token, err := h.tokenSvc.Issue(username, h.FullAccess(username))
 	if err != nil {
 		return "", false
 	}
-	return user, h.checkPassword(user, pass)
+	return token, true
+}
+
+// AuthEnabled reports whether authentication is switched on.
+func (h *Handler) AuthEnabled() bool { return h.cfg.AuthEnabled }
+
+// ─── Roles ───────────────────────────────────────────────────────────────────
+
+var allActions = []string{"pull", "push", "delete"}
+
+// UserActions returns the repository actions the user's role permits.
+func (h *Handler) UserActions(username string) []string {
+	switch {
+	case !h.cfg.AuthEnabled:
+		return allActions
+	case contains(h.cfg.ReadOnlyUsers, username):
+		return []string{"pull"}
+	case len(h.cfg.Admins) == 0 || contains(h.cfg.Admins, username):
+		return allActions
+	default:
+		return []string{"pull", "push"}
+	}
+}
+
+// FullAccess returns everything the user's role permits: their actions on
+// every repository plus the catalog.
+func (h *Handler) FullAccess(username string) []Access {
+	return []Access{
+		{Type: "repository", Name: "*", Actions: h.UserActions(username)},
+		{Type: "registry", Name: "catalog", Actions: []string{"*"}},
+	}
+}
+
+// grantForUser narrows the requested access to what the user's role permits.
+func (h *Handler) grantForUser(username string, requested []Access) []Access {
+	userActions := h.UserActions(username)
+	var granted []Access
+	for _, a := range requested {
+		switch {
+		case a.Type == "repository":
+			var acts []string
+			for _, act := range expandActions(a.Actions) {
+				if contains(userActions, act) {
+					acts = append(acts, act)
+				}
+			}
+			if len(acts) > 0 {
+				granted = append(granted, Access{Type: a.Type, Name: a.Name, Actions: acts})
+			}
+		case a.Type == "registry" && a.Name == "catalog":
+			granted = append(granted, Access{Type: a.Type, Name: a.Name, Actions: []string{"*"}})
+		}
+	}
+	return granted
+}
+
+// expandActions replaces "*" with every concrete repository action.
+func expandActions(actions []string) []string {
+	var out []string
+	for _, a := range actions {
+		if a == "*" {
+			for _, x := range allActions {
+				if !contains(out, x) {
+					out = append(out, x)
+				}
+			}
+		} else if !contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // isPublicReadRequest returns true when the request is a read operation (GET/HEAD)
@@ -254,19 +363,27 @@ func SubjectFromCtx(ctx context.Context) string {
 	return s
 }
 
-// HasAccess checks whether the token in ctx grants action on the given resource.
-// If there is no access list (Basic auth or auth disabled), access is granted.
+// HasAccess checks whether the request in ctx was granted action on the given
+// resource. Requests that bypassed authentication (auth disabled) have no
+// access list in ctx and are always granted.
 func HasAccess(ctx context.Context, resourceType, name, action string) bool {
 	access, ok := ctx.Value(ctxAccess).([]Access)
-	if !ok || access == nil {
+	if !ok {
 		return true
 	}
+	return Allowed(access, resourceType, name, action)
+}
+
+// Allowed reports whether access grants action on the given resource.
+// A name of "*" matches every resource; an action of "*" matches every action.
+func Allowed(access []Access, resourceType, name, action string) bool {
 	for _, a := range access {
-		if a.Type == resourceType && (a.Name == name || a.Name == "*") {
-			for _, act := range a.Actions {
-				if act == action || act == "*" {
-					return true
-				}
+		if a.Type != resourceType || (a.Name != name && a.Name != "*") {
+			continue
+		}
+		for _, act := range a.Actions {
+			if act == action || act == "*" {
+				return true
 			}
 		}
 	}
@@ -298,18 +415,42 @@ func repoFromPath(urlPath string) string {
 	return ""
 }
 
-// inferScope derives a scope string from the request for WWW-Authenticate.
-func inferScope(r *http.Request) string {
+// requiredAccess returns the grant a /v2/ request needs. An empty type means
+// any authenticated identity suffices (e.g. the /v2/ version check).
+func requiredAccess(r *http.Request) (typ, name, action string) {
+	if r.URL.Path == "/v2/_catalog" {
+		return "registry", "catalog", "*"
+	}
 	repo := repoFromPath(r.URL.Path)
 	if repo == "" {
+		return "", "", ""
+	}
+	return "repository", repo, actionFor(r)
+}
+
+// actionFor maps a request to the repository action it performs.
+func actionFor(r *http.Request) string {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		return "pull"
+	case http.MethodDelete:
+		// Cancelling an upload is part of pushing, not deleting content.
+		if strings.Contains(r.URL.Path, "/blobs/uploads/") {
+			return "push"
+		}
+		return "delete"
+	default:
+		return "push"
+	}
+}
+
+// inferScope derives a scope string from the request for WWW-Authenticate.
+func inferScope(r *http.Request) string {
+	typ, name, action := requiredAccess(r)
+	if typ == "" {
 		return ""
 	}
-	action := "pull"
-	switch r.Method {
-	case http.MethodPut, http.MethodPost, http.MethodPatch, http.MethodDelete:
-		action = "push"
-	}
-	return "repository:" + repo + ":" + action
+	return typ + ":" + name + ":" + action
 }
 
 // matchGlob matches name against a glob pattern where:

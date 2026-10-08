@@ -25,6 +25,13 @@ type Config struct {
 	// Format: "alice:$2b$...,bob:$2b$..."
 	Users map[string]string
 
+	// Admins may delete manifests and blobs (RGSTR_ADMINS). When empty, every
+	// non-read-only user may delete — the behaviour before roles existed.
+	Admins []string
+
+	// ReadOnlyUsers may only pull (RGSTR_READONLY_USERS).
+	ReadOnlyUsers []string
+
 	// PublicRepos is a list of repository name patterns that are readable
 	// without authentication. Supports glob wildcards:
 	//   *        — any single path segment   (e.g. "alpine" but not "ns/alpine")
@@ -52,8 +59,10 @@ func Load() *Config {
 		AuthIssuer:  env("RGSTR_AUTH_ISSUER", "rgstr"),
 		TokenTTL:    envDuration("RGSTR_TOKEN_TTL", time.Hour),
 
-		Users:       parseUsers(env("RGSTR_USERS", "")),
-		PublicRepos: parseList(env("RGSTR_PUBLIC_REPOS", "")),
+		Users:         parseUsers(env("RGSTR_USERS", "")),
+		Admins:        parseList(env("RGSTR_ADMINS", "")),
+		ReadOnlyUsers: parseList(env("RGSTR_READONLY_USERS", "")),
+		PublicRepos:   parseList(env("RGSTR_PUBLIC_REPOS", "")),
 
 		GCInterval: envDuration("RGSTR_GC_INTERVAL", time.Hour),
 		UploadTTL:  envDuration("RGSTR_UPLOAD_TTL", 24*time.Hour),
