@@ -77,22 +77,37 @@ sudo systemctl restart rgstr
 
 ### Вариант 2: Docker Compose
 
-Нужны только два файла — `docker-compose.yml` и `.env`. Исходники клонировать не обязательно:
+Нужны только два файла — `docker-compose.yml` и `.env`. Исходники клонировать и собирать не нужно:
 
 ```bash
 mkdir rgstr && cd rgstr
 curl -LO https://raw.githubusercontent.com/piqab/rgstr/main/docker-compose.yml
 curl -L -o .env https://raw.githubusercontent.com/piqab/rgstr/main/.env.example
-# отредактируйте .env
+# (или возьмите оба файла из архива релиза)
 
+# Пользователь: строку из вывода вставьте в .env вместо пустой RGSTR_USERS=
+docker run --rm --entrypoint /mkpasswd ghcr.io/piqab/rgstr alice mypassword
+
+# В .env также задайте:
+#   RGSTR_AUTH_ENABLED=true
+#   RGSTR_AUTH_SECRET=<openssl rand -hex 32>
+#   RGSTR_AUTH_REALM=http://<адрес сервера>:5000/v2/auth
+
+docker compose pull
 docker compose up -d
 docker compose logs -f
+```
+
+Если пакет `ghcr.io/piqab/rgstr` приватный, перед `pull` войдите в GHCR с GitHub-токеном, у которого есть право `read:packages`:
+
+```bash
+echo <TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
 ```
 
 По умолчанию берётся образ `ghcr.io/piqab/rgstr:latest`. Зафиксировать версию — переменной `RGSTR_VERSION` (в `.env` или в окружении):
 
 ```bash
-echo "RGSTR_VERSION=1.0.0" >> .env
+echo "RGSTR_VERSION=1.1.1" >> .env
 docker compose pull && docker compose up -d
 ```
 
@@ -170,15 +185,23 @@ cp .env.example .env
 ### Формат RGSTR_USERS
 
 ```
-RGSTR_USERS="alice:$2a$10$...,bob:$2a$10$..."
+RGSTR_USERS='alice:$2a$10$...,bob:$2a$10$...'
 ```
 
 Каждая запись — `имя:bcrypt-хеш`. Для генерации хеша:
 
 ```bash
+# Без Go — утилита есть в Docker-образе
+docker run --rm --entrypoint /mkpasswd ghcr.io/piqab/rgstr alice mypassword
+# Из архива релиза
+./mkpasswd alice mypassword
+# Из исходников
 go run ./cmd/mkpasswd alice mypassword
-# RGSTR_USERS=alice:$2a$10$...
+
+# RGSTR_USERS='alice:$2a$10$...'
 ```
+
+Значение должно быть в **одинарных** кавычках — так `$` в хеше остаётся как есть и в `.env` для docker compose, и в shell, и в `/etc/rgstr/env` для systemd. Без кавычек или в двойных кавычках docker compose подставит вместо `$2a`, `$10` переменные окружения, хеш обрежется и вход перестанет работать. Подходят и хеши `htpasswd -B` (`$2y$`).
 
 ---
 
@@ -268,13 +291,13 @@ docker push registry.example.com/public/myimage:latest
 
 ```bash
 # 1. Сгенерировать хеши паролей
-go run ./cmd/mkpasswd alice secret1
-go run ./cmd/mkpasswd bob   secret2
+./mkpasswd alice secret1
+./mkpasswd bob   secret2
 
-# 2. Запустить с auth
+# 2. Запустить с auth (хеши — в одинарных кавычках)
 RGSTR_AUTH_ENABLED=true \
 RGSTR_AUTH_SECRET=my-signing-secret \
-RGSTR_USERS="alice:$2a$10$...,bob:$2a$10$..." \
+RGSTR_USERS='alice:$2a$10$...,bob:$2a$10$...' \
 ./rgstr
 ```
 

@@ -1,14 +1,18 @@
 // cmd/mkpasswd generates a bcrypt password hash suitable for use in RGSTR_USERS.
 //
 // Usage:
-//   go run ./cmd/mkpasswd alice mysecret
-//   # Output: alice:$$2a$$12$$...  ($$ is escaped for Docker Compose env_file)
+//
+//	go run ./cmd/mkpasswd alice mysecret
+//	docker run --rm --entrypoint /mkpasswd ghcr.io/piqab/rgstr alice mysecret
+//	# Output: RGSTR_USERS='alice:$2a$10$...'
+//
+// The value is single-quoted so the hash's $ signs survive unchanged in a
+// Docker Compose .env file, a shell, and a systemd EnvironmentFile.
 package main
 
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -26,7 +30,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	// Escape $ as $$ so the hash is ready to paste into .env for Docker Compose.
-	escaped := strings.ReplaceAll(string(hash), "$", "$$")
-	fmt.Printf("RGSTR_USERS=%s:%s\n", username, escaped)
+	fmt.Printf("RGSTR_USERS='%s:%s'\n", username, hash)
 }

@@ -54,13 +54,14 @@ jobs:
         run: |
           VERSION="v$(cat VERSION)"
           go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o rgstr .
+          go build -trimpath -ldflags="-s -w" -o mkpasswd ./cmd/mkpasswd
 
       - name: Package
         id: pkg
         run: |
           name="rgstr-${GITHUB_REF_NAME}-linux-${{ matrix.goarch }}"
           mkdir -p "dist/${name}"
-          cp rgstr README.md .env.example docker-compose.yml "dist/${name}/"
+          cp rgstr mkpasswd README.md .env.example docker-compose.yml "dist/${name}/"
           cp -r deploy "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
