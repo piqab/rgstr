@@ -13,8 +13,40 @@ import (
 
 // Data is everything stored in meta.json.
 type Data struct {
-	Settings  Settings `json:"settings"`
-	GCHistory []GCRun  `json:"gc_history,omitempty"`
+	Settings         Settings        `json:"settings"`
+	GCHistory        []GCRun         `json:"gc_history,omitempty"`
+	Retention        []RetentionRule `json:"retention,omitempty"`
+	RetentionHistory []RetentionRun  `json:"retention_history,omitempty"`
+	Immutable        []ImmutableRule `json:"immutable,omitempty"`
+}
+
+// RetentionRule keeps some tags of matching repositories and deletes the
+// others. A tag is deleted only if every enabled rule covering it lets it go.
+type RetentionRule struct {
+	Repos    string `json:"repos"`     // repository glob, e.g. "team/**"
+	Tags     string `json:"tags"`      // tag glob, e.g. "*" or "dev-*"
+	KeepLast int    `json:"keep_last"` // keep the N most recently pushed (0 = unused)
+	KeepDays int    `json:"keep_days"` // keep tags pushed within N days (0 = unused)
+	Disabled bool   `json:"disabled,omitempty"`
+}
+
+// RetentionRun records one application of the retention rules.
+type RetentionRun struct {
+	Start      time.Time `json:"start"`
+	Trigger    string    `json:"trigger"` // "schedule" or "manual"
+	User       string    `json:"user,omitempty"`
+	DryRun     bool      `json:"dry_run"`
+	TagsCount  int       `json:"tags_count"`
+	Tags       []string  `json:"tags,omitempty"` // repo:tag, capped
+	Error      string    `json:"error,omitempty"`
+	DurationMs int64     `json:"duration_ms"`
+}
+
+// ImmutableRule protects matching tags from being overwritten or deleted.
+type ImmutableRule struct {
+	Repos    string `json:"repos"`
+	Tags     string `json:"tags"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 // Settings changed from the web admin. Zero values mean "use the env default".

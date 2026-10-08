@@ -65,6 +65,11 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/gc", h.handleGC)
 	mux.HandleFunc("/ui/api/gc/run", h.handleGCRun)
 	mux.HandleFunc("/ui/api/gc/settings", h.handleGCSettings)
+
+	mux.HandleFunc("/ui/api/policies", h.handlePolicies)
+	mux.HandleFunc("/ui/api/policies/retention", h.handleRetentionRules)
+	mux.HandleFunc("/ui/api/policies/retention/run", h.handleRetentionRun)
+	mux.HandleFunc("/ui/api/policies/immutable", h.handleImmutableRules)
 }
 
 // servePage serves the app shell; navigation happens client-side (#hash).

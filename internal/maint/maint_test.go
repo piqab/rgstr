@@ -6,6 +6,7 @@ import (
 
 	"rgstr/internal/config"
 	"rgstr/internal/meta"
+	"rgstr/internal/ops"
 	"rgstr/internal/storage"
 )
 
@@ -20,7 +21,7 @@ func newRunner(t *testing.T) *Runner {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, store, m)
+	return New(cfg, store, m, ops.New(store, m))
 }
 
 func TestIntervalOverride(t *testing.T) {
@@ -51,7 +52,7 @@ func TestIntervalOverride(t *testing.T) {
 	// Persisted across restarts.
 	r.SetInterval("12h")
 	m, _ := meta.Open(r.cfg.StorageRoot)
-	if d, _ := New(r.cfg, r.store, m).Interval(); d != 12*time.Hour {
+	if d, _ := New(r.cfg, r.store, m, r.ops).Interval(); d != 12*time.Hour {
 		t.Errorf("after reopen: got %v", d)
 	}
 }

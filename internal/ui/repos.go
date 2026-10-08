@@ -29,6 +29,7 @@ type tagInfo struct {
 	Size      int64          `json:"size"`
 	Platforms []platformInfo `json:"platforms"`
 	PushedAt  time.Time      `json:"pushed_at"`
+	Immutable bool           `json:"immutable,omitempty"`
 	Error     string         `json:"error,omitempty"`
 }
 
@@ -82,6 +83,7 @@ func (h *Handler) handleRepos(w http.ResponseWriter, r *http.Request) {
 		for _, t := range tags {
 			info := h.describeTag(name, t.Name)
 			info.PushedAt = t.PushedAt
+			info.Immutable = h.ops.IsImmutable(name, t.Name)
 			repo.Tags = append(repo.Tags, info)
 		}
 		resp.Repositories = append(resp.Repositories, repo)
@@ -109,6 +111,8 @@ func opError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ops.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ops.ErrImmutable):
+		writeError(w, http.StatusForbidden, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}

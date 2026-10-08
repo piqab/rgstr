@@ -54,7 +54,7 @@
     const sel = selected.get(r.name) || new Set();
     const tools = r.can_delete ? `
       <div class="repo-tools">
-        <label class="check" style="margin:0"><input type="checkbox" data-act="select-all" ${sel.size === n ? 'checked' : ''}>${esc(t('repos.selectAll'))}</label>
+        <label class="check" style="margin:0"><input type="checkbox" data-act="select-all" ${sel.size && sel.size === r.tags.filter(x => !x.immutable).length ? 'checked' : ''}>${esc(t('repos.selectAll'))}</label>
         <button class="btn btn-sm btn-danger" data-act="delete-selected" ${sel.size ? '' : 'disabled'}>${esc(t('repos.deleteSelected', {n: sel.size}))}</button>
       </div>` : '';
     return `
@@ -70,12 +70,13 @@
   }
 
   function tagRow(repo, tg, sel) {
-    const check = repo.can_delete
+    const check = repo.can_delete && !tg.immutable
       ? `<input type="checkbox" data-act="select" data-tag="${esc(tg.name)}" ${sel.has(tg.name) ? 'checked' : ''}>` : '';
-    const del = repo.can_delete ? `
+    const lock = tg.immutable ? `<span class="badge badge-warn" title="${esc(t('repos.immutableHint'))}">🔒 ${esc(t('repos.immutable'))}</span>` : '';
+    const del = repo.can_delete && !tg.immutable ? `
       <button class="btn btn-sm btn-danger" data-act="delete-tag" data-tag="${esc(tg.name)}" title="${esc(t('repos.deleteTagHint'))}">${esc(t('repos.deleteTag'))}</button>
       ${tg.digest ? `<button class="btn btn-sm btn-danger" data-act="delete-image" data-tag="${esc(tg.name)}" title="${esc(t('repos.deleteImageHint'))}">${esc(t('repos.deleteImage'))}</button>` : ''}` : '';
-    const name = `<span class="tag-name">${check} :${esc(tg.name)}</span>`;
+    const name = `<span class="tag-name">${check} :${esc(tg.name)}</span>${lock}`;
     if (tg.error) return `<div class="tag-row">${name}<span class="tag-err">${esc(tg.error)}</span>${del}</div>`;
 
     const same = sameDigest(repo, tg).map(x => ':' + x);
@@ -129,7 +130,7 @@
     const repo = allRepos.find(r => r.name === card.dataset.repo);
     const sel = selected.get(repo.name) || new Set();
     if (e.target.dataset.act === 'select-all') {
-      if (e.target.checked) repo.tags.forEach(x => sel.add(x.name)); else sel.clear();
+      if (e.target.checked) repo.tags.filter(x => !x.immutable).forEach(x => sel.add(x.name)); else sel.clear();
     } else if (e.target.dataset.act === 'select') {
       if (e.target.checked) sel.add(e.target.dataset.tag); else sel.delete(e.target.dataset.tag);
     } else {
@@ -210,4 +211,6 @@ App.addLang('en', {
   'repos.deletedTags': 'Deleted {n} tag(s)',
   'repos.deletedImage': 'Deleted image ({tags})',
   'repos.deletedRepo': 'Deleted repository {repo}',
+  'repos.immutable': 'immutable',
+  'repos.immutableHint': 'Protected by an immutability policy: cannot be overwritten or deleted',
 });

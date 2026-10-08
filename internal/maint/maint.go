@@ -1,5 +1,5 @@
-// Package maint runs scheduled maintenance — garbage collection — and
-// records each run in the metadata store.
+// Package maint runs scheduled maintenance — tag retention, then garbage
+// collection — and records each run in the metadata store.
 package maint
 
 import (
@@ -11,6 +11,7 @@ import (
 
 	"rgstr/internal/config"
 	"rgstr/internal/meta"
+	"rgstr/internal/ops"
 	"rgstr/internal/storage"
 )
 
@@ -22,6 +23,7 @@ type Runner struct {
 	cfg   *config.Config
 	store *storage.Filesystem
 	meta  *meta.Store
+	ops   *ops.Ops
 
 	running sync.Mutex    // held while a run is in progress
 	wake    chan struct{} // reschedule after a settings change
@@ -31,8 +33,8 @@ type Runner struct {
 }
 
 // New creates a Runner.
-func New(cfg *config.Config, store *storage.Filesystem, m *meta.Store) *Runner {
-	return &Runner{cfg: cfg, store: store, meta: m, wake: make(chan struct{}, 1)}
+func New(cfg *config.Config, store *storage.Filesystem, m *meta.Store, o *ops.Ops) *Runner {
+	return &Runner{cfg: cfg, store: store, meta: m, ops: o, wake: make(chan struct{}, 1)}
 }
 
 // Interval returns the effective GC interval (0 = scheduled runs off) and
@@ -117,6 +119,10 @@ func (r *Runner) Start(ctx context.Context) {
 			case <-r.wake:
 				// Interval changed: reschedule from now.
 			case <-timer:
+				// Retention first, so GC frees the space of expired tags.
+				if _, err := r.RunRetention("schedule", "", false); err != nil {
+					log.Printf("retention error: %v", err)
+				}
 				if _, err := r.Run("schedule", "", storage.GCOptions{}); err != nil && !errors.Is(err, ErrBusy) {
 					log.Printf("gc error: %v", err)
 				}
@@ -159,6 +165,40 @@ func (r *Runner) Run(trigger, user string, opts storage.GCOptions) (meta.GCRun, 
 		return nil
 	}); serr != nil {
 		log.Printf("gc: save history: %v", serr)
+	}
+	return run, err
+}
+
+// MaxRetentionListed caps RetentionRun.Tags.
+const MaxRetentionListed = 500
+
+// RunRetention applies the retention rules now and records the run. With no
+// rules configured nothing is recorded.
+func (r *Runner) RunRetention(trigger, user string, dryRun bool) (meta.RetentionRun, error) {
+	run := meta.RetentionRun{Start: time.Now().UTC(), Trigger: trigger, User: user, DryRun: dryRun}
+	var rules int
+	r.meta.View(func(d *meta.Data) { rules = len(d.Retention) })
+	if rules == 0 {
+		return run, nil
+	}
+	tags, err := r.ops.ApplyRetention(ops.Actor{Name: user}, dryRun)
+	run.DurationMs = time.Since(run.Start).Milliseconds()
+	run.TagsCount = len(tags)
+	if len(tags) > MaxRetentionListed {
+		tags = tags[:MaxRetentionListed]
+	}
+	run.Tags = tags
+	if err != nil {
+		run.Error = err.Error()
+	}
+	if serr := r.meta.Update(func(d *meta.Data) error {
+		d.RetentionHistory = append([]meta.RetentionRun{run}, d.RetentionHistory...)
+		if len(d.RetentionHistory) > meta.MaxGCHistory {
+			d.RetentionHistory = d.RetentionHistory[:meta.MaxGCHistory]
+		}
+		return nil
+	}); serr != nil {
+		log.Printf("retention: save history: %v", serr)
 	}
 	return run, err
 }

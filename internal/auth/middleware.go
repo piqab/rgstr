@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"path"
 	"strings"
 	"time"
 
 	"rgstr/internal/config"
+	"rgstr/internal/glob"
 )
 
 type ctxKey int
@@ -494,52 +494,8 @@ func inferScope(r *http.Request) string {
 	return typ + ":" + name + ":" + action
 }
 
-// matchGlob matches name against a glob pattern where:
-//   - "*"  matches any sequence of characters except "/"
-//   - "**" matches any sequence of path segments (zero or more), including "/"
-//   - "?"  matches any single character except "/"
-//
-// Examples:
-//
-//	matchGlob("public/**",    "public/myimage")      → true
-//	matchGlob("public/**",    "public/ns/myimage")   → true
-//	matchGlob("**/public/**", "alex/public/alpine")  → true
-//	matchGlob("library/*",    "library/ubuntu")      → true
-//	matchGlob("library/*",    "library/ns/ubuntu")   → false
-//	matchGlob("alpine",       "alpine")              → true
-func matchGlob(pattern, name string) bool {
-	return matchSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
-}
-
-// matchSegments recursively matches pattern segments against name segments.
-// "**" consumes zero or more name segments.
-func matchSegments(pat, name []string) bool {
-	for len(pat) > 0 {
-		if pat[0] == "**" {
-			pat = pat[1:]
-			if len(pat) == 0 {
-				return true // ** at end matches everything remaining
-			}
-			// Try consuming 0, 1, 2, … name segments for **.
-			for i := 0; i <= len(name); i++ {
-				if matchSegments(pat, name[i:]) {
-					return true
-				}
-			}
-			return false
-		}
-		if len(name) == 0 {
-			return false
-		}
-		ok, err := path.Match(pat[0], name[0])
-		if err != nil || !ok {
-			return false
-		}
-		pat = pat[1:]
-		name = name[1:]
-	}
-	return len(name) == 0
-}
+// matchGlob matches a repository name against a pattern; see glob.Match.
+func matchGlob(pattern, name string) bool { return glob.Match(pattern, name) }
 
 func errBody(code, msg string) map[string]interface{} {
 	return map[string]interface{}{

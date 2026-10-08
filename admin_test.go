@@ -117,3 +117,80 @@ func TestUIGarbageCollection(t *testing.T) {
 		t.Errorf("bad interval: got %d want 400", r.StatusCode)
 	}
 }
+
+func TestImmutableTags(t *testing.T) {
+	srv, _ := newTestServer(t)
+	pushImage(t, srv.URL, "app", "v1", "amd64")
+	if r := postJSON(t, srv.URL+"/ui/api/policies/immutable", `{"rules":[{"repos":"app","tags":"v*"}]}`, nil); r.StatusCode != http.StatusOK {
+		t.Fatalf("save rule: %d", r.StatusCode)
+	}
+
+	// Re-pushing the same image is fine; another image under v1 is refused.
+	mf := do(t, "GET", srv.URL+"/v2/app/manifests/v1", nil, nil)
+	var raw json.RawMessage
+	json.NewDecoder(mf.Body).Decode(&raw)
+	mf.Body.Close()
+	pushManifest(t, srv.URL, "app", "v1", mf.Header.Get("Content-Type"), raw)
+
+	other := `{"schemaVersion":2,"layers":[]}`
+	resp := do(t, "PUT", srv.URL+"/v2/app/manifests/v1", []byte(other), map[string]string{"Content-Type": "application/vnd.oci.image.manifest.v1+json"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("overwrite immutable tag: got %d want 403", resp.StatusCode)
+	}
+	// A new tag matching the rule can still be pushed once.
+	pushManifest(t, srv.URL, "app", "v2", "application/vnd.oci.image.manifest.v1+json", []byte(other))
+
+	if code := status(t, "DELETE", srv.URL+"/v2/app/manifests/v1", nil); code != http.StatusForbidden {
+		t.Errorf("docker API delete immutable: got %d want 403", code)
+	}
+	r := postJSON(t, srv.URL+"/ui/api/tags/delete", `{"repo":"app","tags":["v1"]}`, nil)
+	var res struct {
+		Results []struct{ Error string } `json:"results"`
+	}
+	json.NewDecoder(r.Body).Decode(&res)
+	r.Body.Close()
+	if len(res.Results) != 1 || res.Results[0].Error == "" {
+		t.Errorf("UI delete immutable tag: %+v", res.Results)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/repos/delete", `{"repo":"app"}`, nil); r.StatusCode != http.StatusForbidden {
+		t.Errorf("delete repo with immutable tags: got %d want 403", r.StatusCode)
+	}
+}
+
+func TestRetentionRun(t *testing.T) {
+	srv, _ := newTestServer(t)
+	for _, tag := range []string{"a", "b", "c"} {
+		pushImage(t, srv.URL, "app", tag, tag)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/policies/retention", `{"rules":[{"repos":"**","tags":"*"}]}`, nil); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("rule without keep: got %d want 400", r.StatusCode)
+	}
+	postJSON(t, srv.URL+"/ui/api/policies/retention", `{"rules":[{"repos":"**","tags":"*","keep_last":1}]}`, nil).Body.Close()
+
+	run := func(dry bool) (n int) {
+		body := `{"dry_run":false}`
+		if dry {
+			body = `{"dry_run":true}`
+		}
+		r := postJSON(t, srv.URL+"/ui/api/policies/retention/run", body, nil)
+		var res struct {
+			Count int `json:"tags_count"`
+		}
+		json.NewDecoder(r.Body).Decode(&res)
+		r.Body.Close()
+		return res.Count
+	}
+	if n := run(true); n != 2 {
+		t.Errorf("dry run: %d tags, want 2", n)
+	}
+	if len(getRepos(t, srv.URL, nil).Repositories[0].Tags) != 3 {
+		t.Error("dry run deleted tags")
+	}
+	if n := run(false); n != 2 {
+		t.Errorf("run: %d tags, want 2", n)
+	}
+	if tags := getRepos(t, srv.URL, nil).Repositories[0].Tags; len(tags) != 1 {
+		t.Errorf("after run: %d tags, want 1", len(tags))
+	}
+}

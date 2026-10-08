@@ -64,14 +64,15 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 	if err != nil {
 		log.Fatalf("metadata: %v", err)
 	}
+	o := ops.New(store, m)
 	return &Registry{
 		store:    store,
 		tokenSvc: tokenSvc,
 		cfg:      cfg,
 		counter:  counter,
-		ops:      ops.New(store),
+		ops:      o,
 		meta:     m,
-		maint:    maint.New(cfg, store, m),
+		maint:    maint.New(cfg, store, m, o),
 	}
 }
 
@@ -558,7 +559,12 @@ func (reg *Registry) handlePutManifest(w http.ResponseWriter, r *http.Request, r
 		ContentType: ct,
 		Content:     body,
 	}
-	if err := reg.store.PutManifest(repo, reference, mf); err != nil {
+	actor := ops.ActorFrom(r, auth.SubjectFromCtx(r.Context()))
+	if err := reg.ops.PutManifest(actor, repo, reference, mf); err != nil {
+		if errors.Is(err, ops.ErrImmutable) {
+			writeError(w, http.StatusForbidden, CodeDenied, err.Error(), nil)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
@@ -582,6 +588,10 @@ func (reg *Registry) handleDeleteManifest(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		if errors.Is(err, ops.ErrNotFound) {
 			writeError(w, http.StatusNotFound, CodeManifestUnknown, "manifest unknown", nil)
+			return
+		}
+		if errors.Is(err, ops.ErrImmutable) {
+			writeError(w, http.StatusForbidden, CodeDenied, err.Error(), nil)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
