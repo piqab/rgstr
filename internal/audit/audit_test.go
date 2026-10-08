@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,4 +62,41 @@ func TestRotation(t *testing.T) {
 func TestNilLog(t *testing.T) {
 	var l *Log
 	l.Add(Entry{Action: Push}) // must not panic
+}
+
+func TestClientIP(t *testing.T) {
+	defer TrustProxies(DefaultTrustedProxies)
+	req := func(remote string, xff ...string) *http.Request {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		for _, v := range xff {
+			r.Header.Add("X-Forwarded-For", v)
+		}
+		return r
+	}
+	cases := []struct {
+		name string
+		r    *http.Request
+		want string
+	}{
+		{"direct", req("203.0.113.7:5555"), "203.0.113.7"},
+		{"direct client forging the header", req("203.0.113.7:5555", "1.2.3.4"), "203.0.113.7"},
+		{"behind proxy", req("172.17.0.1:5555", "198.51.100.9"), "198.51.100.9"},
+		{"forged hop before the real client", req("127.0.0.1:1", "1.2.3.4, 198.51.100.9"), "198.51.100.9"},
+		{"two proxies", req("10.0.0.2:1", "198.51.100.9, 10.0.0.1"), "198.51.100.9"},
+		{"garbage", req("10.0.0.2:1", "not-an-ip"), "10.0.0.2"},
+		{"ipv6", req("[::1]:1", "2001:db8::5"), "2001:db8::5"},
+	}
+	for _, c := range cases {
+		if got := ClientIP(c.r); got != c.want {
+			t.Errorf("%s: got %s want %s", c.name, got, c.want)
+		}
+	}
+	TrustProxies(nil)
+	if got := ClientIP(req("172.17.0.1:5555", "198.51.100.9")); got != "172.17.0.1" {
+		t.Errorf("no trusted proxies: got %s", got)
+	}
+	if err := TrustProxies([]string{"bogus"}); err == nil {
+		t.Error("accepted bogus CIDR")
+	}
 }

@@ -1,0 +1,22 @@
+# fail2ban jail for rgstr. Copy to /etc/fail2ban/jail.d/ together with
+# filter.d/rgstr.conf, set logpath, then: systemctl reload fail2ban
+
+[rgstr]
+enabled     = true
+filter      = rgstr
+# Binary / systemd install (deploy/install.sh):
+logpath     = /var/lib/rgstr/audit.log
+# Docker Compose with the named volume rgstr-data:
+# logpath   = /var/lib/docker/volumes/rgstr-data/_data/audit.log
+# audit.log times are UTC.
+logtimezone = UTC
+backend     = polling
+# 5 failed sign-ins within 10 minutes → banned for 1 hour.
+maxretry    = 5
+findtime    = 10m
+bantime     = 1h
+# Ports clients use to reach the registry (directly or through nginx).
+port        = 5000,http,https
+# rgstr in Docker with a published port: Docker's NAT bypasses INPUT,
+# so ban in the DOCKER-USER chain instead:
+# banaction = iptables-multiport[chain="DOCKER-USER"]

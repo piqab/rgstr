@@ -195,6 +195,7 @@ cp .env.example .env
 | `RGSTR_ADMIN_PASSWORD` | — | Временный пароль первого администратора, без хеша. Требует смены при первом входе в `/ui` (см. [Первый администратор](#первый-администратор)) |
 | `RGSTR_ADMINS` | — | Пользователи, которым разрешено удаление (см. [Роли](#роли-пользователей)). Пусто — удалять могут все, кроме read-only |
 | `RGSTR_READONLY_USERS` | — | Пользователи только с правом pull |
+| `RGSTR_TRUSTED_PROXIES` | loopback и частные сети | Прокси, чьему `X-Forwarded-For` верить при записи IP клиента; `none` — не верить никому (см. [fail2ban](#fail2ban)) |
 | `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
 | `RGSTR_GC_INTERVAL` | `1h` | Интервал запуска сборщика мусора |
 | `RGSTR_UPLOAD_TTL` | `24h` | Через сколько удалять незавершённые загрузки. Это же льготный период GC: загруженное недавно не удаляется, даже если на него ещё не указывает тег |
@@ -433,6 +434,24 @@ RGSTR_TLS_KEY=/etc/letsencrypt/live/registry.example.com/privkey.pem \
 Или используйте nginx/Caddy/HAProxy как TLS-терминатор перед реестром.
 
 ---
+
+## fail2ban
+
+Неудачные входы (`docker login`, веб-админка, неверный текущий пароль при смене) пишутся в `<RGSTR_STORAGE>/audit.log` с IP клиента. В `deploy/fail2ban/` лежат фильтр и jail: 5 неудачных попыток за 10 минут — бан на час.
+
+```bash
+sudo cp deploy/fail2ban/filter.d/rgstr.conf /etc/fail2ban/filter.d/
+sudo cp deploy/fail2ban/jail.d/rgstr.local  /etc/fail2ban/jail.d/
+sudo nano /etc/fail2ban/jail.d/rgstr.local   # logpath, порты, banaction для Docker
+sudo fail2ban-regex /var/lib/rgstr/audit.log /etc/fail2ban/filter.d/rgstr.conf   # проверка
+sudo systemctl reload fail2ban
+sudo fail2ban-client status rgstr
+```
+
+- **`logpath`:** `/var/lib/rgstr/audit.log` при установке через `deploy/install.sh`; для Docker Compose с volume `rgstr-data` — `/var/lib/docker/volumes/rgstr-data/_data/audit.log` (или путь bind-mount, если вы смонтировали `./data`).
+- **Docker с опубликованным портом:** трафик к контейнеру идёт через NAT Docker мимо цепочки `INPUT`, поэтому баните в `DOCKER-USER`: раскомментируйте в jail строку `banaction = iptables-multiport[chain="DOCKER-USER"]`. Если перед реестром стоит nginx на хосте, обычный `banaction` подходит.
+- **Реальный IP за прокси.** rgstr берёт IP из `X-Forwarded-For`, только если запрос пришёл от доверенного прокси (`RGSTR_TRUSTED_PROXIES`, по умолчанию loopback и частные сети), и берёт в цепочке крайний правый недоверенный адрес — клиент не может подставить чужой IP, отправив заголовок сам. nginx из `nginx.conf` передаёт заголовок правильно. Если реестр доступен напрямую из сети, где есть недоверенные клиенты с частными адресами, задайте `RGSTR_TRUSTED_PROXIES=none` или конкретный адрес прокси.
+- Имя пользователя в журнале задаёт клиент, но оно экранировано в JSON, и фильтр не даёт подставить через него поддельный IP.
 
 ## Reverse proxy
 

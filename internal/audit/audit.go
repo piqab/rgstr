@@ -5,6 +5,7 @@ package audit
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -233,15 +234,95 @@ func readFile(path string) ([]Entry, error) {
 	}
 }
 
-// ClientIP returns the client address of r. Behind a reverse proxy the
-// first X-Forwarded-For address is used.
-func ClientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+// DefaultTrustedProxies are the networks a reverse proxy usually runs in:
+// loopback, private and link-local addresses.
+var DefaultTrustedProxies = []string{
+	"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+	"fc00::/7", "169.254.0.0/16", "fe80::/10",
+}
+
+var trusted = mustParseNets(DefaultTrustedProxies)
+
+// TrustProxies sets the networks whose X-Forwarded-For header is believed.
+// An empty list ignores the header entirely.
+func TrustProxies(cidrs []string) error {
+	nets, err := parseNets(cidrs)
+	if err != nil {
+		return err
 	}
+	trusted = nets
+	return nil
+}
+
+func parseNets(cidrs []string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, c := range cidrs {
+		if !strings.Contains(c, "/") {
+			if strings.Contains(c, ":") {
+				c += "/128"
+			} else {
+				c += "/32"
+			}
+		}
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			return nil, fmt.Errorf("trusted proxy %q: %w", c, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func mustParseNets(cidrs []string) []*net.IPNet {
+	nets, err := parseNets(cidrs)
+	if err != nil {
+		panic(err)
+	}
+	return nets
+}
+
+func isTrusted(ip string) bool {
+	addr := net.ParseIP(ip)
+	if addr == nil {
+		return false
+	}
+	for _, n := range trusted {
+		if n.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// ClientIP returns the client address of r. X-Forwarded-For is used only
+// when the request comes from a trusted proxy; then the client is the
+// rightmost address not belonging to a trusted proxy, so a client cannot
+// forge its address by sending the header itself.
+func ClientIP(r *http.Request) string {
 	ip := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host
+	}
+	fwd := r.Header.Values("X-Forwarded-For")
+	if len(fwd) == 0 || !isTrusted(ip) {
+		return ip
+	}
+	var hops []string
+	for _, v := range fwd {
+		for _, h := range strings.Split(v, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				hops = append(hops, h)
+			}
+		}
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		if net.ParseIP(hops[i]) == nil {
+			break // garbage: stop believing the chain
+		}
+		if !isTrusted(hops[i]) {
+			return hops[i]
+		}
+		ip = hops[i]
 	}
 	return ip
 }

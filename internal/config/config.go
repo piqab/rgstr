@@ -40,6 +40,12 @@ type Config struct {
 	// ReadOnlyUsers may only pull (RGSTR_READONLY_USERS).
 	ReadOnlyUsers []string
 
+	// TrustedProxies are networks (CIDRs or IPs) whose X-Forwarded-For
+	// header is believed when logging client addresses
+	// (RGSTR_TRUSTED_PROXIES; unset = loopback and private networks,
+	// "none" = never).
+	TrustedProxies []string
+
 	// PublicRepos is a list of repository name patterns that are readable
 	// without authentication. Supports glob wildcards:
 	//   *        — any single path segment   (e.g. "alpine" but not "ns/alpine")
@@ -67,12 +73,13 @@ func Load() *Config {
 		AuthIssuer:  env("RGSTR_AUTH_ISSUER", "rgstr"),
 		TokenTTL:    envDuration("RGSTR_TOKEN_TTL", time.Hour),
 
-		Users:         parseUsers(env("RGSTR_USERS", "")),
-		AdminUser:     env("RGSTR_ADMIN_USER", "admin"),
-		AdminPassword: os.Getenv("RGSTR_ADMIN_PASSWORD"),
-		Admins:        parseList(env("RGSTR_ADMINS", "")),
-		ReadOnlyUsers: parseList(env("RGSTR_READONLY_USERS", "")),
-		PublicRepos:   parseList(env("RGSTR_PUBLIC_REPOS", "")),
+		Users:          parseUsers(env("RGSTR_USERS", "")),
+		AdminUser:      env("RGSTR_ADMIN_USER", "admin"),
+		AdminPassword:  os.Getenv("RGSTR_ADMIN_PASSWORD"),
+		Admins:         parseList(env("RGSTR_ADMINS", "")),
+		ReadOnlyUsers:  parseList(env("RGSTR_READONLY_USERS", "")),
+		PublicRepos:    parseList(env("RGSTR_PUBLIC_REPOS", "")),
+		TrustedProxies: trustedProxies(),
 
 		GCInterval: envDuration("RGSTR_GC_INTERVAL", time.Hour),
 		UploadTTL:  envDuration("RGSTR_UPLOAD_TTL", 24*time.Hour),
@@ -135,4 +142,16 @@ func envDuration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// trustedProxies reads RGSTR_TRUSTED_PROXIES. nil means the defaults.
+func trustedProxies() []string {
+	v, set := os.LookupEnv("RGSTR_TRUSTED_PROXIES")
+	if !set || strings.TrimSpace(v) == "" {
+		return nil
+	}
+	if strings.TrimSpace(v) == "none" {
+		return []string{}
+	}
+	return parseList(v)
 }

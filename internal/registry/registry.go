@@ -77,6 +77,11 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 	if err != nil {
 		log.Fatalf("metadata: %v", err)
 	}
+	if cfg.TrustedProxies != nil {
+		if err := audit.TrustProxies(cfg.TrustedProxies); err != nil {
+			log.Fatalf("RGSTR_TRUSTED_PROXIES: %v", err)
+		}
+	}
 	alog, err := audit.Open(cfg.StorageRoot)
 	if err != nil {
 		log.Fatalf("audit log: %v", err)
