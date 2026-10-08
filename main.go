@@ -16,6 +16,9 @@ import (
 	"rgstr/internal/storage"
 )
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	cfg := config.Load()
 
@@ -43,8 +46,8 @@ func main() {
 	defer gcCancel()
 	go store.GCLoop(gcCtx, cfg.GCInterval)
 
-	log.Printf("rgstr listening on %s  storage=%s  auth=%v",
-		cfg.ListenAddr, cfg.StorageRoot, cfg.AuthEnabled)
+	log.Printf("rgstr %s listening on %s  storage=%s  auth=%v",
+		version, cfg.ListenAddr, cfg.StorageRoot, cfg.AuthEnabled)
 
 	go func() {
 		var serveErr error

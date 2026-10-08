@@ -21,7 +21,7 @@ Environment=RGSTR_STORAGE=/var/lib/rgstr
 # Auth — set these or override via /etc/rgstr/env
 Environment=RGSTR_AUTH_ENABLED=false
 Environment=RGSTR_AUTH_SECRET=change-me-in-production
-# EnvironmentFile=-/etc/rgstr/env
+EnvironmentFile=-/etc/rgstr/env
 
 # Timeouts
 Environment=RGSTR_GC_INTERVAL=1h

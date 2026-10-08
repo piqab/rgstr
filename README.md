@@ -23,48 +23,120 @@
 
 ## Быстрый старт
 
-### Локально
+Готовые сборки публикуются автоматически через GitHub Actions:
+
+- **бинарники** (linux/amd64, linux/arm64) — на странице [Releases](https://github.com/piqab/rgstr/releases);
+- **Docker-образ** (amd64 + arm64) — `ghcr.io/piqab/rgstr`.
+
+| Тег образа | Что внутри |
+|---|---|
+| `latest` | последний релиз |
+| `1.2.3`, `1.2` | конкретная версия |
+| `main` | текущая ветка `main` (может быть нестабильной) |
+
+### Вариант 1: бинарник
 
 ```bash
-git clone https://github.com/piqab/rgstr
-cd rgstr
+VERSION=v1.0.0          # нужная версия со страницы Releases
+ARCH=amd64              # или arm64
 
-go mod tidy
-go build -o rgstr .
+curl -LO https://github.com/piqab/rgstr/releases/download/${VERSION}/rgstr-${VERSION}-linux-${ARCH}.tar.gz
+curl -LO https://github.com/piqab/rgstr/releases/download/${VERSION}/rgstr-${VERSION}-linux-${ARCH}.tar.gz.sha256
+sha256sum -c rgstr-${VERSION}-linux-${ARCH}.tar.gz.sha256
+
+tar xzf rgstr-${VERSION}-linux-${ARCH}.tar.gz
+cd rgstr-${VERSION}-linux-${ARCH}
+```
+
+В архиве: бинарник `rgstr`, `.env.example`, `docker-compose.yml`, `deploy/` (systemd unit и скрипт установки) и этот README.
+
+**Быстрый запуск в текущей директории:**
+
+```bash
+RGSTR_STORAGE=./data ./rgstr
+```
+
+Конфигурация задаётся только переменными окружения (см. [Конфигурация](#конфигурация)); сам бинарник `.env` не читает. Чтобы взять настройки из файла:
+
+```bash
+cp .env.example .env
+# отредактируйте .env
+set -a; . ./.env; set +a
 ./rgstr
 ```
 
-Реестр запустится на `http://localhost:5000`.
+**Установка как systemd-сервис (production):**
 
 ```bash
+sudo ./deploy/install.sh ./rgstr
+sudo nano /etc/rgstr/env        # auth, пользователи, публичные репозитории
+sudo systemctl restart rgstr
+```
+
+Подробнее — в разделе [Развёртывание на Linux](#развёртывание-на-linux).
+
+### Вариант 2: Docker Compose
+
+Нужны только два файла — `docker-compose.yml` и `.env`. Исходники клонировать не обязательно:
+
+```bash
+mkdir rgstr && cd rgstr
+curl -LO https://raw.githubusercontent.com/piqab/rgstr/main/docker-compose.yml
+curl -L -o .env https://raw.githubusercontent.com/piqab/rgstr/main/.env.example
+# отредактируйте .env
+
+docker compose up -d
+docker compose logs -f
+```
+
+По умолчанию берётся образ `ghcr.io/piqab/rgstr:latest`. Зафиксировать версию — переменной `RGSTR_VERSION` (в `.env` или в окружении):
+
+```bash
+echo "RGSTR_VERSION=1.0.0" >> .env
+docker compose pull && docker compose up -d
+```
+
+Обновление: `docker compose pull && docker compose up -d`.
+Собрать образ локально из исходников (в клоне репозитория): `docker compose up -d --build`.
+
+`docker compose` передаёт все переменные из `.env` в контейнер. `RGSTR_STORAGE` всегда переопределяется на `/data` (Docker volume).
+
+> **Внимание:** данные хранятся в named volume `rgstr-data` (управляется Docker), а не в локальной папке `./data`. Найти volume на хосте: `docker volume inspect rgstr-data`. Если нужна локальная папка — замените в `docker-compose.yml` `rgstr-data:/data` на `./data:/data` и удалите секцию `volumes: rgstr-data:`.
+
+### Вариант 3: docker run
+
+```bash
+docker run -d \
+  --name rgstr \
+  --restart unless-stopped \
+  -p 5000:5000 \
+  -v /srv/registry:/data \
+  ghcr.io/piqab/rgstr:latest
+```
+
+### Проверка
+
+Реестр слушает `http://localhost:5000`:
+
+```bash
+curl http://localhost:5000/v2/
+
 docker pull alpine
 docker tag alpine localhost:5000/myrepo/alpine:latest
 docker push localhost:5000/myrepo/alpine:latest
 docker pull localhost:5000/myrepo/alpine:latest
 ```
 
-### Docker
+Для доступа с других машин по HTTP см. [Настройка Docker daemon для HTTP реестра](#настройка-docker-daemon-для-http-реестра) или настройте [TLS](#tls).
+
+### Из исходников
 
 ```bash
-docker build -t rgstr .
-docker run -d \
-  --name rgstr \
-  -p 5000:5000 \
-  -v /srv/registry:/data \
-  rgstr
+git clone https://github.com/piqab/rgstr
+cd rgstr
+make build
+./rgstr
 ```
-
-### Docker Compose
-
-```bash
-cp .env.example .env
-# Отредактируйте .env под свои нужды
-docker compose up -d
-```
-
-`docker compose` автоматически подхватывает `.env` из текущей директории и передаёт все переменные в контейнер. `RGSTR_STORAGE` всегда переопределяется на `/data` (Docker volume).
-
-> **Внимание:** данные хранятся в named volume `rgstr-data` (управляется Docker), а не в локальной папке `./data`. Найти volume на хосте: `docker volume inspect rgstr-data`. Если нужна локальная папка — замените в `docker-compose.yml` `rgstr-data:/data` на `./data:/data` и удалите секцию `volumes: rgstr-data:`.
 
 ---
 
@@ -283,17 +355,15 @@ sudo systemctl reload haproxy
 ### Systemd (production)
 
 ```bash
-# Собрать Linux-бинарь
-make build-linux          # → rgstr-linux-amd64
-
-# Установить и запустить как systemd-сервис
-sudo ./deploy/install.sh ./rgstr-linux-amd64
+# Бинарник из релиза (см. «Быстрый старт → бинарник») или собранный локально:
+#   make build-linux   → ./rgstr-linux-amd64
+sudo ./deploy/install.sh ./rgstr
 ```
 
 Скрипт создаёт:
 - системного пользователя `rgstr`
 - директорию `/var/lib/rgstr` для хранилища
-- конфигурационный файл `/etc/rgstr/env` для секретов
+- конфигурационный файл `/etc/rgstr/env` для секретов (переменные из него переопределяют значения в unit-файле)
 - systemd unit с hardening-настройками
 
 Управление сервисом:
@@ -430,6 +500,26 @@ make cover
 # Очистка
 make clean
 ```
+
+---
+
+## Релизы (CI/CD)
+
+Сборка настроена в `.github/workflows/`:
+
+- `ci.yml` — `go vet` и тесты на каждый push в `main` и pull request;
+- `release.yml` — сборка и публикация:
+  - push в `main` → образ `ghcr.io/piqab/rgstr:main`;
+  - тег `v*` → GitHub Release с архивами `rgstr-<версия>-linux-{amd64,arm64}.tar.gz` (+ `.sha256`) и образ `:<версия>`, `:<major>.<minor>`, `:latest`.
+
+Выпустить релиз:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Образ публикуется через встроенный `GITHUB_TOKEN`, дополнительные секреты не нужны. После первой публикации пакет в GHCR по умолчанию приватный — чтобы `docker pull` работал без логина, откройте **Packages → rgstr → Package settings → Change visibility → Public**.
 
 ---
 

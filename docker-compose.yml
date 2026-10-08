@@ -1,9 +1,10 @@
-version: "3.9"
-
 services:
   rgstr:
+    # Готовый образ из GitHub Container Registry.
+    # Версию можно зафиксировать: RGSTR_VERSION=1.2.3 docker compose up -d
+    # Собрать локально из исходников: docker compose up -d --build
+    image: ghcr.io/piqab/rgstr:${RGSTR_VERSION:-latest}
     build: .
-    image: rgstr:latest
     container_name: rgstr
     restart: unless-stopped
     ports:
