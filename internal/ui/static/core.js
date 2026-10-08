@@ -199,7 +199,8 @@ const App = (() => {
   }
 
   // ── Routing ───────────────────────────────────────────────────────────────
-  // Pages: App.page(id, {title: 'nav.key', admin: bool, render(el, arg)}).
+  // Pages: App.page(id, {title: 'nav.key', admin: bool, hidden: bool,
+  // render(el, arg)}). Hidden pages are reachable by URL but not in the menu.
   // URL: #id or #id/arg.
   const pages = [];
 
@@ -213,6 +214,7 @@ const App = (() => {
     if (!session.ready) return;
     const cur = currentRoute().id;
     $('nav').innerHTML = visiblePages()
+      .filter(p => !p.hidden)
       .map(p => `<a href="#${p.id}" class="${p.id === cur ? 'active' : ''}">${esc(t(p.title))}</a>`)
       .join('');
   }
@@ -229,6 +231,10 @@ const App = (() => {
     const r = currentRoute();
     const p = visiblePages().find(x => x.id === r.id) || visiblePages()[0];
     renderNav();
+    if (p.hidden && p.parent) {
+      const a = document.querySelector(`#nav a[href="#${p.parent}"]`);
+      if (a) a.classList.add('active');
+    }
     const el = $('app');
     const seq = ++renderSeq;
     el.innerHTML = `<div class="loading">${esc(t('common.loading'))}</div>`;

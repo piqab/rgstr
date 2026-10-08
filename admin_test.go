@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -293,5 +294,78 @@ func TestAuditLog(t *testing.T) {
 		if !strings.HasPrefix(got[i], want[i]) {
 			t.Errorf("entry %d: got %q want prefix %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestUIImageDetails(t *testing.T) {
+	srv, _ := newTestServer(t)
+	config := []byte(`{"os":"linux","architecture":"amd64","created":"2026-01-02T03:04:05Z",
+		"config":{"Env":["PATH=/bin"],"Cmd":["/app"],"ExposedPorts":{"8080/tcp":{}},"Labels":{"team":"core"}},
+		"history":[{"created_by":"/bin/sh -c #(nop) ADD file:abc in / "},{"created_by":"/bin/sh -c #(nop)  ENV PATH=/bin","empty_layer":true},
+		{"created_by":"/bin/sh -c apk add curl"}]}`)
+	l1, l2 := []byte("layer one"), []byte("layer two!")
+	cd, d1, d2 := pushBlob(t, srv.URL, "app", config), pushBlob(t, srv.URL, "app", l1), pushBlob(t, srv.URL, "app", l2)
+	m := fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
+		"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"%s","size":%d},
+		"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"%s","size":%d},
+		{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"%s","size":%d}]}`,
+		cd, len(config), d1, len(l1), d2, len(l2))
+	digest := pushManifest(t, srv.URL, "app", "1.0", "application/vnd.oci.image.manifest.v1+json", []byte(m))
+
+	resp := do(t, "GET", srv.URL+"/ui/api/image?repo=app&ref=1.0", nil, nil)
+	var img struct {
+		Digest string   `json:"digest"`
+		Tags   []string `json:"tags"`
+		Image  struct {
+			Env    []string `json:"env"`
+			Cmd    []string `json:"cmd"`
+			Ports  []string `json:"exposed_ports"`
+			Labels map[string]string
+			Layers []struct {
+				CreatedBy string `json:"created_by"`
+				Digest    string `json:"digest"`
+				Size      int64  `json:"size"`
+				Empty     bool   `json:"empty"`
+			} `json:"layers"`
+		} `json:"image"`
+	}
+	json.NewDecoder(resp.Body).Decode(&img)
+	resp.Body.Close()
+	if img.Digest != digest || len(img.Tags) != 1 {
+		t.Errorf("digest/tags: %+v", img)
+	}
+	if len(img.Image.Env) != 1 || img.Image.Cmd[0] != "/app" || img.Image.Ports[0] != "8080/tcp" || img.Image.Labels["team"] != "core" {
+		t.Errorf("config: %+v", img.Image)
+	}
+	ls := img.Image.Layers
+	if len(ls) != 3 || ls[0].Digest != d1 || !ls[1].Empty || ls[2].Digest != d2 || ls[2].CreatedBy != "apk add curl" || ls[2].Size != int64(len(l2)) {
+		t.Errorf("layers: %+v", ls)
+	}
+
+	// Index: platforms listed, attestation skipped.
+	idx := fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+		{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s","size":1,"platform":{"os":"linux","architecture":"amd64"}},
+		{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s","size":1,"platform":{"os":"unknown","architecture":"unknown"}}]}`, digest, digest)
+	pushManifest(t, srv.URL, "app", "multi", "application/vnd.oci.image.index.v1+json", []byte(idx))
+	resp = do(t, "GET", srv.URL+"/ui/api/image?repo=app&ref=multi", nil, nil)
+	var ix struct {
+		Platforms []struct{ Digest string } `json:"platforms"`
+		Image     *struct{}                  `json:"image"`
+	}
+	json.NewDecoder(resp.Body).Decode(&ix)
+	resp.Body.Close()
+	if len(ix.Platforms) != 1 || ix.Platforms[0].Digest != digest || ix.Image != nil {
+		t.Errorf("index: %+v", ix)
+	}
+
+	if code := status(t, "GET", srv.URL+"/ui/api/image?repo=app&ref=nope", nil); code != http.StatusNotFound {
+		t.Errorf("missing tag: got %d want 404", code)
+	}
+}
+
+func TestUIImageRequiresPull(t *testing.T) {
+	srv := newAuthTestServer(t)
+	if code := status(t, "GET", srv.URL+"/ui/api/image?repo=app&ref=1", nil); code != http.StatusUnauthorized {
+		t.Errorf("anonymous: got %d want 401", code)
 	}
 }

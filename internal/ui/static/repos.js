@@ -76,7 +76,8 @@
     const del = repo.can_delete && !tg.immutable ? `
       <button class="btn btn-sm btn-danger" data-act="delete-tag" data-tag="${esc(tg.name)}" title="${esc(t('repos.deleteTagHint'))}">${esc(t('repos.deleteTag'))}</button>
       ${tg.digest ? `<button class="btn btn-sm btn-danger" data-act="delete-image" data-tag="${esc(tg.name)}" title="${esc(t('repos.deleteImageHint'))}">${esc(t('repos.deleteImage'))}</button>` : ''}` : '';
-    const name = `<span class="tag-name">${check} :${esc(tg.name)}</span>${lock}`;
+    const link = `#image/${encodeURIComponent(repo.name + ':' + tg.name)}`;
+    const name = `<span class="tag-name">${check} <a href="${link}" title="${esc(t('repos.openImage'))}">:${esc(tg.name)}</a></span>${lock}`;
     if (tg.error) return `<div class="tag-row">${name}<span class="tag-err">${esc(tg.error)}</span>${del}</div>`;
 
     const same = sameDigest(repo, tg).map(x => ':' + x);
@@ -212,5 +213,6 @@ App.addLang('en', {
   'repos.deletedImage': 'Deleted image ({tags})',
   'repos.deletedRepo': 'Deleted repository {repo}',
   'repos.immutable': 'immutable',
+  'repos.openImage': 'Open image details',
   'repos.immutableHint': 'Protected by an immutability policy: cannot be overwritten or deleted',
 });

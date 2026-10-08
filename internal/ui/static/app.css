@@ -106,3 +106,13 @@ input.search{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:6px
   .stat-card{padding:12px 16px}
   nav a{padding:12px 8px 10px}
 }
+
+/* ── Key/value tables (image page) ─────────────────────────────────────── */
+table.kv{border-collapse:collapse;width:100%;font-size:.88rem}
+.kv th{text-align:left;font-weight:500;color:#777;padding:6px 16px 6px 0;width:180px;vertical-align:top;white-space:nowrap}
+.kv td{padding:6px 0;vertical-align:top;word-break:break-word}
+tr.muted td{color:#999}
+a.badge{text-decoration:none}
+a.badge:hover{background:#e4e4ee}
+.step{white-space:pre-wrap;word-break:break-all;cursor:pointer}
+.step.clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
