@@ -111,12 +111,16 @@
         <p class="muted small" style="margin-bottom:10px">${esc(t('proj.rolesHint'))}</p>
         ${members.length ? `<div class="tbl-wrap"><table class="tbl">
           <tr><th>${esc(t('users.name'))}</th><th>${esc(t('users.role'))}</th><th></th></tr>
-          ${members.map(mb => `
+          ${members.map(mb => {
+            // Project admins cannot change their own role (registry admins can).
+            const edit = manage && (is_admin || mb.user !== App.session.user);
+            return `
             <tr>
               <td>${esc(mb.user)}</td>
-              <td>${manage ? roleSelect(mb.user, mb.role) : esc(t('prole.' + mb.role))}</td>
-              <td class="actions">${manage ? `<button class="btn btn-sm btn-danger" data-remove="${esc(mb.user)}">${esc(t('proj.remove'))}</button>` : ''}</td>
-            </tr>`).join('')}
+              <td>${edit ? roleSelect(mb.user, mb.role) : esc(t('prole.' + mb.role))}</td>
+              <td class="actions">${edit ? `<button class="btn btn-sm btn-danger" data-remove="${esc(mb.user)}">${esc(t('proj.remove'))}</button>` : ''}</td>
+            </tr>`;
+          }).join('')}
         </table></div>` : `<div class="empty">${esc(t('proj.noMembers'))}</div>`}
         ${manage ? `
           <form class="form toolbar" id="add-member" style="margin:14px 0 0">
