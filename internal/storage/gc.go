@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -10,23 +9,34 @@ import (
 	"time"
 )
 
-// GCLoop runs RunGC on the given interval until ctx is cancelled.
-func (fs *Filesystem) GCLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := fs.RunGC(); err != nil {
-				log.Printf("gc error: %v", err)
-			}
-		}
-	}
+// GCOptions control a garbage collection run.
+type GCOptions struct {
+	// DryRun reports what would be removed without removing anything.
+	DryRun bool
+	// IgnoreGrace also removes recent unreferenced uploads and manifests.
+	// This frees space immediately but can break a push in progress.
+	IgnoreGrace bool
 }
 
-// RunGC performs a mark-and-sweep garbage collection pass.
+// GCResult reports what a run removed (or, for a dry run, would remove).
+type GCResult struct {
+	BlobsRemoved     int
+	BytesFreed       int64
+	ManifestsRemoved int
+	UploadsRemoved   int
+	Manifests        []string // repo@sha256:…, at most MaxGCListed
+}
+
+// MaxGCListed caps GCResult.Manifests.
+const MaxGCListed = 200
+
+// RunGC runs a regular garbage collection pass.
+func (fs *Filesystem) RunGC() error {
+	_, err := fs.CollectGarbage(GCOptions{})
+	return err
+}
+
+// CollectGarbage performs a mark-and-sweep garbage collection pass.
 //
 // The algorithm:
 //  1. Acquire the global write lock so no blobs can be written or deleted
@@ -45,8 +55,9 @@ func (fs *Filesystem) GCLoop(ctx context.Context, interval time.Duration) {
 //
 // Because the write lock is held throughout, the window where a blob could be
 // concurrently deleted or written is closed, so there are no TOCTOU races.
-func (fs *Filesystem) RunGC() error {
-	log.Println("gc: starting")
+func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
+	var res GCResult
+	log.Printf("gc: starting (dry run: %v, ignore grace: %v)", opts.DryRun, opts.IgnoreGrace)
 
 	// ── Phase 0: Acquire write lock ───────────────────────────────────────
 	fs.gcMu.Lock()
@@ -55,6 +66,9 @@ func (fs *Filesystem) RunGC() error {
 	// ── Phase 1: Mark ─────────────────────────────────────────────────────
 	referenced := make(map[string]bool) // blob hex hash → in use
 	recent := func(d os.DirEntry) bool {
+		if opts.IgnoreGrace {
+			return false
+		}
 		info, err := d.Info()
 		return err == nil && time.Since(info.ModTime()) < fs.cfg.UploadTTL
 	}
@@ -105,7 +119,7 @@ func (fs *Filesystem) RunGC() error {
 		}
 		return nil
 	}); err != nil {
-		return err
+		return res, err
 	}
 
 	// Follow references from the roots. A digest that names a manifest in
@@ -142,7 +156,6 @@ func (fs *Filesystem) RunGC() error {
 
 	// ── Phase 2: Sweep unreferenced blobs ─────────────────────────────────
 	blobsRoot := filepath.Join(fs.root, "blobs", "sha256")
-	deletedBlobs := 0
 
 	if err := filepath.WalkDir(blobsRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -158,21 +171,33 @@ func (fs *Filesystem) RunGC() error {
 		if len(hexHash) != 64 {
 			return nil
 		}
-		if !referenced[hexHash] {
-			if err := os.Remove(path); err == nil {
-				log.Printf("gc: removed blob sha256:%s", hexHash)
-				deletedBlobs++
-			}
+		if referenced[hexHash] {
+			return nil
 		}
+		var size int64
+		if info, err := d.Info(); err == nil {
+			size = info.Size()
+		}
+		if !opts.DryRun {
+			if err := os.Remove(path); err != nil {
+				return nil
+			}
+			log.Printf("gc: removed blob sha256:%s", hexHash)
+		}
+		res.BlobsRemoved++
+		res.BytesFreed += size
 		return nil
 	}); err != nil {
-		return err
+		return res, err
 	}
 
 	// ── Phase 2b: Drop repository links to removed blobs ──────────────────
 	// Otherwise a repo would regain access if the same content were later
 	// uploaded to a different repository.
 	filepath.WalkDir(reposDir, func(path string, d os.DirEntry, err error) error {
+		if opts.DryRun {
+			return filepath.SkipAll
+		}
 		if err != nil || d.IsDir() || filepath.Base(filepath.Dir(path)) != "layers" {
 			return nil
 		}
@@ -187,21 +212,26 @@ func (fs *Filesystem) RunGC() error {
 	})
 
 	// ── Phase 3: Remove unreachable by-digest manifests ──────────────────
-	deletedMfst := 0
-	for _, st := range repos {
+	for dir, st := range repos {
+		name, _ := filepath.Rel(reposDir, dir)
 		for hexHash, path := range st.manifests {
 			if reachable[path] {
 				continue
 			}
-			if err := os.Remove(path); err == nil {
-				log.Printf("gc: removed manifest sha256:%s", hexHash)
-				deletedMfst++
+			if !opts.DryRun {
+				if err := os.Remove(path); err != nil {
+					continue
+				}
+				log.Printf("gc: removed manifest %s@sha256:%s", filepath.ToSlash(name), hexHash)
+			}
+			res.ManifestsRemoved++
+			if len(res.Manifests) < MaxGCListed {
+				res.Manifests = append(res.Manifests, filepath.ToSlash(name)+"@sha256:"+hexHash)
 			}
 		}
 	}
 
 	// ── Phase 4: Clean stale upload sessions ──────────────────────────────
-	staleUploads := 0
 	uploadsDir := filepath.Join(fs.root, "uploads")
 	entries, _ := os.ReadDir(uploadsDir)
 	for _, e := range entries {
@@ -218,15 +248,18 @@ func (fs *Filesystem) RunGC() error {
 			continue
 		}
 		if time.Since(info.StartedAt) > fs.cfg.UploadTTL {
+			res.UploadsRemoved++
+			if opts.DryRun {
+				continue
+			}
 			os.RemoveAll(filepath.Join(uploadsDir, e.Name()))
 			fs.uploadMu.Delete(e.Name())
-			staleUploads++
 			log.Printf("gc: removed stale upload %s (repo=%s, age=%s)",
 				e.Name(), info.Repo, time.Since(info.StartedAt).Round(time.Second))
 		}
 	}
 
-	log.Printf("gc: done — blobs removed: %d, manifests removed: %d, stale uploads: %d",
-		deletedBlobs, deletedMfst, staleUploads)
-	return nil
+	log.Printf("gc: done — blobs removed: %d (%d bytes), manifests removed: %d, stale uploads: %d",
+		res.BlobsRemoved, res.BytesFreed, res.ManifestsRemoved, res.UploadsRemoved)
+	return res, nil
 }

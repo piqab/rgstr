@@ -610,3 +610,49 @@ func TestDeleteRepositoryKeepsNested(t *testing.T) {
 		t.Errorf("empty directories left behind: %v", entries)
 	}
 }
+
+func TestCollectGarbageDryRunAndStats(t *testing.T) {
+	fs := newTestFS(t)
+	mf, layer := putImage(t, fs, "repo", "old", []byte("twelve bytes"))
+	fs.DeleteManifest("repo", "old")
+
+	res, err := fs.CollectGarbage(GCOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if res.ManifestsRemoved != 1 || res.BlobsRemoved != 1 || res.BytesFreed != 12 {
+		t.Errorf("dry run result: %+v, want 1 manifest, 1 blob, 12 bytes", res)
+	}
+	if len(res.Manifests) != 1 || res.Manifests[0] != "repo@"+string(mf.Digest) {
+		t.Errorf("dry run manifests: %v", res.Manifests)
+	}
+	if _, err := fs.StatBlob(layer); err != nil {
+		t.Errorf("dry run removed the blob: %v", err)
+	}
+	if _, err := fs.GetManifest("repo", string(mf.Digest)); err != nil {
+		t.Errorf("dry run removed the manifest: %v", err)
+	}
+
+	res, _ = fs.CollectGarbage(GCOptions{})
+	if res.BytesFreed != 12 {
+		t.Errorf("real run freed %d bytes, want 12", res.BytesFreed)
+	}
+	if _, err := fs.StatBlob(layer); err != ErrBlobNotFound {
+		t.Errorf("blob after real run: %v", err)
+	}
+}
+
+func TestCollectGarbageIgnoreGrace(t *testing.T) {
+	fs := newTestFS(t)
+	data := []byte("fresh upload")
+	d := digestOf(data)
+	fs.PutBlob(d, bytes.NewReader(data))
+	fs.LinkBlob("repo", d) // recent link: protected by the grace period
+
+	if res, _ := fs.CollectGarbage(GCOptions{}); res.BlobsRemoved != 0 {
+		t.Errorf("regular run removed a recent blob")
+	}
+	if res, _ := fs.CollectGarbage(GCOptions{IgnoreGrace: true}); res.BlobsRemoved != 1 {
+		t.Errorf("ignore-grace run: removed %d blobs, want 1", res.BlobsRemoved)
+	}
+}

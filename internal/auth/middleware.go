@@ -548,3 +548,6 @@ func errBody(code, msg string) map[string]interface{} {
 		},
 	}
 }
+
+// Config returns the configuration the handler was built with.
+func (h *Handler) Config() *config.Config { return h.cfg }

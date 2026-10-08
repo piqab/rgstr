@@ -7,6 +7,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 
 	"rgstr/internal/auth"
 	"rgstr/internal/config"
+	"rgstr/internal/maint"
+	"rgstr/internal/meta"
 	"rgstr/internal/ops"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
@@ -51,11 +54,25 @@ type Registry struct {
 	counter     *stats.Counter
 	authHandler *auth.Handler
 	ops         *ops.Ops
+	meta        *meta.Store
+	maint       *maint.Runner
 }
 
 // New creates a Registry.
 func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Config, counter *stats.Counter) *Registry {
-	return &Registry{store: store, tokenSvc: tokenSvc, cfg: cfg, counter: counter, ops: ops.New(store)}
+	m, err := meta.Open(cfg.StorageRoot)
+	if err != nil {
+		log.Fatalf("metadata: %v", err)
+	}
+	return &Registry{
+		store:    store,
+		tokenSvc: tokenSvc,
+		cfg:      cfg,
+		counter:  counter,
+		ops:      ops.New(store),
+		meta:     m,
+		maint:    maint.New(cfg, store, m),
+	}
 }
 
 // Mount registers the registry handler on mux. The auth middleware is always
@@ -75,7 +92,19 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 
 	mux.HandleFunc("/stats", reg.handleStats)
 
-	ui.New(reg.authHandler, reg.store, reg.counter, reg.ops).Mount(mux)
+	ui.New(ui.Deps{
+		Auth:    reg.authHandler,
+		Store:   reg.store,
+		Counter: reg.counter,
+		Ops:     reg.ops,
+		Meta:    reg.meta,
+		Maint:   reg.maint,
+	}).Mount(mux)
+}
+
+// Start launches background maintenance (scheduled GC) until ctx ends.
+func (reg *Registry) Start(ctx context.Context) {
+	reg.maint.Start(ctx)
 }
 
 // dispatch is the central router.

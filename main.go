@@ -44,7 +44,7 @@ func main() {
 
 	gcCtx, gcCancel := context.WithCancel(context.Background())
 	defer gcCancel()
-	go store.GCLoop(gcCtx, cfg.GCInterval)
+	reg.Start(gcCtx)
 
 	log.Printf("rgstr %s listening on %s  storage=%s  auth=%v",
 		version, cfg.ListenAddr, cfg.StorageRoot, cfg.AuthEnabled)

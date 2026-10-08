@@ -34,6 +34,7 @@ h3{font-size:1rem;margin:20px 0 10px}
 .dialog .note{font-size:.84rem;color:#666;margin:-6px 0 16px;line-height:1.45}
 .err{color:#c00;font-size:.84rem;margin-top:10px;display:none}
 .check{display:flex!important;align-items:center;margin-bottom:14px!important;color:#333!important}
+.check input{margin:0 8px 0 0;width:auto}
 .dialog-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 
 /* ── Buttons ───────────────────────────────────────────────────────────── */

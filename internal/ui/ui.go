@@ -10,6 +10,8 @@ import (
 	"net/http"
 
 	"rgstr/internal/auth"
+	"rgstr/internal/maint"
+	"rgstr/internal/meta"
 	"rgstr/internal/ops"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
@@ -18,17 +20,29 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
+// Deps are the services the UI is built on.
+type Deps struct {
+	Auth    *auth.Handler
+	Store   *storage.Filesystem
+	Counter *stats.Counter
+	Ops     *ops.Ops
+	Meta    *meta.Store
+	Maint   *maint.Runner
+}
+
 // Handler serves the web UI and its API.
 type Handler struct {
 	auth    *auth.Handler
 	store   *storage.Filesystem
 	counter *stats.Counter
 	ops     *ops.Ops
+	meta    *meta.Store
+	maint   *maint.Runner
 }
 
 // New creates a UI handler.
-func New(authHandler *auth.Handler, store *storage.Filesystem, counter *stats.Counter, o *ops.Ops) *Handler {
-	return &Handler{auth: authHandler, store: store, counter: counter, ops: o}
+func New(d Deps) *Handler {
+	return &Handler{auth: d.Auth, store: d.Store, counter: d.Counter, ops: d.Ops, meta: d.Meta, maint: d.Maint}
 }
 
 // Mount registers the UI handlers on mux.
@@ -47,6 +61,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/repos/delete", h.handleDeleteRepo)
 	mux.HandleFunc("/ui/api/tags/delete", h.handleDeleteTags)
 	mux.HandleFunc("/ui/api/images/delete", h.handleDeleteImage)
+
+	mux.HandleFunc("/ui/api/gc", h.handleGC)
+	mux.HandleFunc("/ui/api/gc/run", h.handleGCRun)
+	mux.HandleFunc("/ui/api/gc/settings", h.handleGCSettings)
 }
 
 // servePage serves the app shell; navigation happens client-side (#hash).

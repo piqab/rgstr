@@ -82,3 +82,38 @@ func TestUIDeleteRequiresDeleteRight(t *testing.T) {
 		t.Errorf("anonymous repo delete: got %d want 401", r.StatusCode)
 	}
 }
+
+func TestUIGarbageCollection(t *testing.T) {
+	srv := newAuthTestServer(t)
+	alice := map[string]string{"Authorization": "Basic YWxpY2U6c2VjcmV0"}
+	bob := map[string]string{"Authorization": "Basic Ym9iOnNlY3JldA=="}
+
+	if code := status(t, "GET", srv.URL+"/ui/api/gc", bob); code != http.StatusForbidden {
+		t.Errorf("non-admin GC status: got %d want 403", code)
+	}
+	r := postJSON(t, srv.URL+"/ui/api/gc/run", `{"dry_run":true}`, alice)
+	var run struct {
+		DryRun bool   `json:"dry_run"`
+		User   string `json:"user"`
+	}
+	json.NewDecoder(r.Body).Decode(&run)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK || !run.DryRun || run.User != "alice" {
+		t.Errorf("dry run: got %d %+v", r.StatusCode, run)
+	}
+
+	r = postJSON(t, srv.URL+"/ui/api/gc/settings", `{"interval":"6h"}`, alice)
+	var st struct {
+		Interval string            `json:"interval"`
+		FromUI   bool              `json:"from_ui"`
+		History  []json.RawMessage `json:"history"`
+	}
+	json.NewDecoder(r.Body).Decode(&st)
+	r.Body.Close()
+	if st.Interval != "6h0m0s" || !st.FromUI || len(st.History) != 1 {
+		t.Errorf("settings: %+v", st)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/gc/settings", `{"interval":"often"}`, alice); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad interval: got %d want 400", r.StatusCode)
+	}
+}
