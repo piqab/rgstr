@@ -64,7 +64,12 @@ jobs:
           cp rgstr mkpasswd README.md .env.example docker-compose.yml "dist/${name}/"
           cp -r deploy "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          # Bare binaries alongside the archive, for a plain download.
+          cp rgstr "dist/rgstr-linux-${{ matrix.goarch }}"
+          cp mkpasswd "dist/mkpasswd-linux-${{ matrix.goarch }}"
+          (cd dist && for f in "${name}.tar.gz" rgstr-linux-* mkpasswd-linux-*; do
+            sha256sum "$f" > "$f.sha256"
+          done)
           echo "name=${name}" >> "$GITHUB_OUTPUT"
 
       - name: Upload to release
@@ -74,6 +79,10 @@ jobs:
           files: |
             dist/${{ steps.pkg.outputs.name }}.tar.gz
             dist/${{ steps.pkg.outputs.name }}.tar.gz.sha256
+            dist/rgstr-linux-${{ matrix.goarch }}
+            dist/rgstr-linux-${{ matrix.goarch }}.sha256
+            dist/mkpasswd-linux-${{ matrix.goarch }}
+            dist/mkpasswd-linux-${{ matrix.goarch }}.sha256
 
   image:
     needs: test

@@ -25,7 +25,7 @@
 
 Готовые сборки публикуются автоматически через GitHub Actions:
 
-- **бинарники** (linux/amd64, linux/arm64) — на странице [Releases](https://github.com/piqab/rgstr/releases);
+- **бинарники** (linux/amd64, linux/arm64) — на странице [Releases](https://github.com/piqab/rgstr/releases): отдельными файлами `rgstr-linux-<arch>` и `mkpasswd-linux-<arch>` и архивом `rgstr-<версия>-linux-<arch>.tar.gz` с файлами для установки;
 - **Docker-образ** (amd64 + arm64) — `ghcr.io/piqab/rgstr`.
 
 | Тег образа | Что внутри |
@@ -48,7 +48,14 @@ tar xzf rgstr-${VERSION}-linux-${ARCH}.tar.gz
 cd rgstr-${VERSION}-linux-${ARCH}
 ```
 
-В архиве: бинарник `rgstr`, `.env.example`, `docker-compose.yml`, `deploy/` (systemd unit и скрипт установки) и этот README.
+В архиве: бинарники `rgstr` и `mkpasswd`, `.env.example`, `docker-compose.yml`, `deploy/` (systemd unit и скрипт установки) и этот README.
+
+Если нужен только бинарник, без архива:
+
+```bash
+curl -L -o rgstr https://github.com/piqab/rgstr/releases/download/${VERSION}/rgstr-linux-${ARCH}
+chmod +x rgstr
+```
 
 **Быстрый запуск в текущей директории:**
 
@@ -567,7 +574,7 @@ make clean
 - `ci.yml` — `go vet` и тесты на каждый push в `main` и pull request;
 - `release.yml` — сборка и публикация:
   - push в `main` → образ `ghcr.io/piqab/rgstr:main`;
-  - тег `v*` → GitHub Release с архивами `rgstr-<версия>-linux-{amd64,arm64}.tar.gz` (+ `.sha256`) и образ `:<версия>`, `:<major>.<minor>`, `:latest`.
+  - тег `v*` → GitHub Release с бинарниками `rgstr-linux-{amd64,arm64}`, `mkpasswd-linux-{amd64,arm64}` и архивами `rgstr-<версия>-linux-{amd64,arm64}.tar.gz` (у каждого файла есть `.sha256`) и образ `:<версия>`, `:<major>.<minor>`, `:latest`.
 
 Версия хранится в файле `VERSION` (например, `1.0.0`). Она же вшивается в бинарник при `make build`. Выпустить релиз:
 
