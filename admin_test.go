@@ -505,3 +505,49 @@ func TestUIRobots(t *testing.T) {
 		t.Errorf("delete: got %d", r.StatusCode)
 	}
 }
+
+func TestProjectQuota(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// 20-byte quota.
+	postJSON(t, srv.URL+"/ui/api/projects/create", `{"name":"team","quota_bytes":20}`, nil).Body.Close()
+
+	small := pushBlob(t, srv.URL, "team/app", []byte("0123456789")) // 10 bytes
+	big := pushBlob(t, srv.URL, "team/app", []byte("0123456789abcdef"))
+	manifest := func(digest string, size int) []byte {
+		return []byte(fmt.Sprintf(`{"schemaVersion":2,"layers":[{"digest":"%s","size":%d}]}`, digest, size))
+	}
+	put := func(tag string, body []byte) int {
+		r := do(t, "PUT", srv.URL+"/v2/team/app/manifests/"+tag, body, map[string]string{"Content-Type": "application/vnd.oci.image.manifest.v1+json"})
+		r.Body.Close()
+		return r.StatusCode
+	}
+	if code := put("a", manifest(small, 10)); code != http.StatusCreated {
+		t.Fatalf("within quota: got %d", code)
+	}
+	if code := put("b", manifest(big, 16)); code != http.StatusForbidden {
+		t.Errorf("over quota: got %d want 403", code)
+	}
+	// Re-tagging existing data adds nothing and passes.
+	if code := put("c", manifest(small, 10)); code != http.StatusCreated {
+		t.Errorf("re-tag: got %d want 201", code)
+	}
+	// Raising the quota lets the push through.
+	postJSON(t, srv.URL+"/ui/api/projects/update", `{"name":"team","quota_bytes":100}`, nil).Body.Close()
+	if code := put("b", manifest(big, 16)); code != http.StatusCreated {
+		t.Errorf("after raising quota: got %d", code)
+	}
+	// Repositories outside projects are not limited.
+	pushImage(t, srv.URL, "free", "x", "amd64")
+
+	resp := do(t, "GET", srv.URL+"/ui/api/projects", nil, nil)
+	var res struct {
+		Projects []struct {
+			Used int64 `json:"used_bytes"`
+		} `json:"projects"`
+	}
+	json.NewDecoder(resp.Body).Decode(&res)
+	resp.Body.Close()
+	if res.Projects[0].Used != 26 {
+		t.Errorf("usage: %d want 26", res.Projects[0].Used)
+	}
+}

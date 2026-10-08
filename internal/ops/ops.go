@@ -62,6 +62,7 @@ func (o *Ops) AuditLog() *audit.Log { return o.audit }
 var (
 	ErrNotFound  = errors.New("not found")
 	ErrImmutable = errors.New("tag is immutable")
+	ErrQuota     = errors.New("quota exceeded")
 )
 
 // immutableErr names the protected tags.
@@ -99,7 +100,66 @@ func (o *Ops) PutManifest(a Actor, repo, ref string, m *storage.Manifest) (err e
 			return immutableErr(repo, []string{ref})
 		}
 	}
+	if err := o.checkQuota(repo, m.Content); err != nil {
+		return err
+	}
 	return o.store.PutManifest(repo, ref, m)
+}
+
+// checkQuota refuses a manifest that would grow the project's usage past
+// its quota. Pushes that add no new data (re-tagging) always pass.
+func (o *Ops) checkQuota(repo string, content []byte) error {
+	name := meta.ProjectOf(repo)
+	if name == "" {
+		return nil
+	}
+	p, ok := o.meta.Project(name)
+	if !ok || p.QuotaBytes <= 0 {
+		return nil
+	}
+	blobs := o.projectBlobs(name)
+	current := sumSizes(blobs)
+	o.store.ManifestBlobs(repo, content, blobs)
+	next := sumSizes(blobs)
+	if next > p.QuotaBytes && next > current {
+		return fmt.Errorf("%w: project %s would use %s of %s", ErrQuota, name, humanBytes(next), humanBytes(p.QuotaBytes))
+	}
+	return nil
+}
+
+func (o *Ops) projectBlobs(project string) map[storage.Digest]int64 {
+	blobs := map[storage.Digest]int64{}
+	repos, err := o.store.ListRepositories()
+	if err != nil {
+		return blobs
+	}
+	for _, repo := range repos {
+		if meta.ProjectOf(repo) == project {
+			o.store.ReachableBlobs(repo, blobs)
+		}
+	}
+	return blobs
+}
+
+func sumSizes(blobs map[storage.Digest]int64) int64 {
+	var total int64
+	for _, size := range blobs {
+		total += size
+	}
+	return total
+}
+
+func humanBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // RecordPull audits a manifest download.
@@ -265,19 +325,5 @@ func (o *Ops) ApplyRetention(a Actor, dryRun bool) ([]string, error) {
 // ProjectUsage returns the bytes of data the project's repositories keep:
 // distinct blobs reachable from their tags.
 func (o *Ops) ProjectUsage(project string) int64 {
-	repos, err := o.store.ListRepositories()
-	if err != nil {
-		return 0
-	}
-	blobs := map[storage.Digest]int64{}
-	for _, repo := range repos {
-		if meta.ProjectOf(repo) == project {
-			o.store.ReachableBlobs(repo, blobs)
-		}
-	}
-	var total int64
-	for _, size := range blobs {
-		total += size
-	}
-	return total
+	return sumSizes(o.projectBlobs(project))
 }

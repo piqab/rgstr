@@ -569,7 +569,7 @@ func (reg *Registry) handlePutManifest(w http.ResponseWriter, r *http.Request, r
 	}
 	actor := ops.ActorFrom(r, auth.SubjectFromCtx(r.Context()))
 	if err := reg.ops.PutManifest(actor, repo, reference, mf); err != nil {
-		if errors.Is(err, ops.ErrImmutable) {
+		if errors.Is(err, ops.ErrImmutable) || errors.Is(err, ops.ErrQuota) {
 			writeError(w, http.StatusForbidden, CodeDenied, err.Error(), nil)
 			return
 		}
