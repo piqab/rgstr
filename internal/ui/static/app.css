@@ -116,3 +116,10 @@ a.badge{text-decoration:none}
 a.badge:hover{background:#e4e4ee}
 .step{white-space:pre-wrap;word-break:break-all;cursor:pointer}
 .step.clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+
+/* ── Language pickers ──────────────────────────────────────────────────── */
+#lang-select{background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:4px;padding:4px 6px;font-size:.8rem}
+#lang-select option{color:#222}
+.lang-links{margin-top:16px;text-align:center;font-size:.82rem;color:#aaa}
+.lang-links a{color:#888;text-decoration:none}
+.lang-links a.active{color:#1a1a2e;font-weight:600}

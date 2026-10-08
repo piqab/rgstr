@@ -17,6 +17,7 @@
     <input id="li-pass" type="password" autocomplete="current-password" required>
     <button type="submit" class="btn btn-primary btn-block" data-t="login.submit">Sign in</button>
     <div class="err" id="li-err"></div>
+    <div class="lang-links" id="login-langs"></div>
   </form>
 </div>
 
@@ -46,6 +47,7 @@
   <h1><a href="#repos">rgstr</a></h1>
   <nav id="nav"></nav>
   <div class="hdr-right">
+    <select id="lang-select" aria-label="Language"></select>
     <span id="hdr-user"></span>
     <button class="hdr-btn" id="btn-password" data-t="hdr.password">Change password</button>
     <button class="hdr-btn" id="btn-logout" data-t="hdr.logout">Sign out</button>
@@ -63,6 +65,7 @@
 <script src="/ui/static/policies.js"></script>
 <script src="/ui/static/users.js"></script>
 <script src="/ui/static/audit.js"></script>
+<script src="/ui/static/i18n-ru.js"></script>
 <script>App.boot();</script>
 </body>
 </html>

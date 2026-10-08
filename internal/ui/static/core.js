@@ -15,6 +15,15 @@ const App = (() => {
     langs[code] = Object.assign(langs[code] || {}, dict);
   }
 
+  // Language pickers: a select in the header, links on the sign-in form.
+  function renderLangs() {
+    const codes = Object.keys(langs);
+    $('lang-select').innerHTML = codes
+      .map(c => `<option value="${c}" ${c === lang ? 'selected' : ''}>${esc(langs[c]['lang.name'] || c)}</option>`).join('');
+    $('login-langs').innerHTML = codes
+      .map(c => `<a href="#" data-lang="${c}" class="${c === lang ? 'active' : ''}">${esc(langs[c]['lang.name'] || c)}</a>`).join(' · ');
+  }
+
   function t(key, params) {
     let s = (langs[lang] && langs[lang][key]) || langs.en[key] || key;
     if (params) s = s.replace(/\{(\w+)\}/g, (m, k) => (k in params ? params[k] : m));
@@ -27,6 +36,7 @@ const App = (() => {
     try { localStorage.setItem('rgstr_lang', code); } catch (e) { /* storage unavailable */ }
     document.documentElement.lang = code;
     document.querySelectorAll('[data-t]').forEach(el => { el.textContent = t(el.dataset.t); });
+    renderLangs();
     renderNav();
     if (session.ready) route();
   }
@@ -73,6 +83,11 @@ const App = (() => {
     setLang(langs[code] ? code : 'en');
 
     $('login-form').addEventListener('submit', doLogin);
+    $('lang-select').addEventListener('change', e => setLang(e.target.value));
+    $('login-langs').addEventListener('click', e => {
+      const a = e.target.closest('[data-lang]');
+      if (a) { e.preventDefault(); setLang(a.dataset.lang); }
+    });
     $('btn-logout').addEventListener('click', () => showLogin(''));
     $('btn-password').addEventListener('click', () => openPasswordForm());
     $('pw-form').addEventListener('submit', doChangePassword);
@@ -307,6 +322,7 @@ const App = (() => {
 })();
 
 App.addLang('en', {
+  'lang.name': 'English',
   'login.title': 'rgstr — sign in',
   'login.username': 'Username',
   'login.password': 'Password',
