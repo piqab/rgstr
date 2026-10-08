@@ -2,6 +2,7 @@ name: Release
 
 # push в main  → образ ghcr.io/<owner>/rgstr:main
 # тег v1.2.3   → GitHub Release с бинарниками + образ :1.2.3, :1.2, :latest
+# Версия хранится в файле VERSION; тег должен совпадать с v$(cat VERSION).
 on:
   push:
     branches: [main]
@@ -16,6 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          want="v$(cat VERSION)"
+          if [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION file ($want)"
+            exit 1
+          fi
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -42,8 +51,8 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
-          VERSION: ${{ github.ref_name }}
         run: |
+          VERSION="v$(cat VERSION)"
           go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o rgstr .
 
       - name: Package
@@ -83,6 +92,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Version
+        id: ver
+        run: |
+          v="v$(cat VERSION)"
+          # Сборки из main помечаем коммитом, чтобы не путать с релизом.
+          case "$GITHUB_REF" in refs/tags/v*) ;; *) v="${v}-main.${GITHUB_SHA::7}" ;; esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
       - name: Tags
         id: meta
         uses: docker/metadata-action@v5
@@ -104,6 +121,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

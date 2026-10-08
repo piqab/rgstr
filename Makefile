@@ -1,5 +1,5 @@
 BINARY  = rgstr
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell cat VERSION 2>/dev/null || echo dev)
 LDFLAGS  = -trimpath -ldflags="-s -w -X main.version=$(VERSION)"
 
 .PHONY: all build build-linux build-windows run run-auth docker docker-push \

@@ -512,12 +512,16 @@ make clean
   - push в `main` → образ `ghcr.io/piqab/rgstr:main`;
   - тег `v*` → GitHub Release с архивами `rgstr-<версия>-linux-{amd64,arm64}.tar.gz` (+ `.sha256`) и образ `:<версия>`, `:<major>.<minor>`, `:latest`.
 
-Выпустить релиз:
+Версия хранится в файле `VERSION` (например, `1.0.0`). Она же вшивается в бинарник при `make build`. Выпустить релиз:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+# 1. повысить версию в VERSION и закоммитить
+# 2. запушить main и поставить тег из файла
+git push origin main
+git tag v$(cat VERSION) && git push origin v$(cat VERSION)
 ```
+
+Если тег не совпадает с `v$(cat VERSION)`, релизная сборка падает с ошибкой.
 
 Образ публикуется через встроенный `GITHUB_TOKEN`, дополнительные секреты не нужны. После первой публикации пакет в GHCR по умолчанию приватный — чтобы `docker pull` работал без логина, откройте **Packages → rgstr → Package settings → Change visibility → Public**.
 
