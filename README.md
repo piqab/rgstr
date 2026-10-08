@@ -92,18 +92,18 @@ curl -LO https://raw.githubusercontent.com/piqab/rgstr/main/docker-compose.yml
 curl -L -o .env https://raw.githubusercontent.com/piqab/rgstr/main/.env.example
 # (или возьмите оба файла из архива релиза)
 
-# Пользователь: строку из вывода вставьте в .env вместо пустой RGSTR_USERS=
-docker run --rm --entrypoint /mkpasswd ghcr.io/piqab/rgstr alice mypassword
-
-# В .env также задайте:
+# В .env задайте:
 #   RGSTR_AUTH_ENABLED=true
 #   RGSTR_AUTH_SECRET=<openssl rand -hex 32>
 #   RGSTR_AUTH_REALM=http://<адрес сервера>:5000/v2/auth
+#   RGSTR_ADMIN_PASSWORD=<временный пароль>
 
 docker compose pull
 docker compose up -d
 docker compose logs -f
 ```
+
+Откройте `http://<адрес сервера>:5000/ui`, войдите как `admin` с временным паролем и задайте постоянный — до этого `docker login` под `admin` не пройдёт. Остальных пользователей можно добавить в `RGSTR_USERS` (см. [Формат RGSTR_USERS](#формат-rgstr_users)).
 
 Если пакет `ghcr.io/piqab/rgstr` приватный, перед `pull` войдите в GHCR с GitHub-токеном, у которого есть право `read:packages`:
 
@@ -114,7 +114,7 @@ echo <TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
 По умолчанию берётся образ `ghcr.io/piqab/rgstr:latest`. Зафиксировать версию — переменной `RGSTR_VERSION` (в `.env` или в окружении):
 
 ```bash
-echo "RGSTR_VERSION=1.1.2" >> .env
+echo "RGSTR_VERSION=1.2.0" >> .env
 docker compose pull && docker compose up -d
 ```
 
@@ -191,6 +191,8 @@ cp .env.example .env
 | `RGSTR_AUTH_ISSUER` | `rgstr` | Издатель токенов (поле `iss`) |
 | `RGSTR_TOKEN_TTL` | `1h` | Время жизни токена |
 | `RGSTR_USERS` | — | Список пользователей (см. ниже) |
+| `RGSTR_ADMIN_USER` | `admin` | Имя первого администратора |
+| `RGSTR_ADMIN_PASSWORD` | — | Временный пароль первого администратора, без хеша. Требует смены при первом входе в `/ui` (см. [Первый администратор](#первый-администратор)) |
 | `RGSTR_ADMINS` | — | Пользователи, которым разрешено удаление (см. [Роли](#роли-пользователей)). Пусто — удалять могут все, кроме read-only |
 | `RGSTR_READONLY_USERS` | — | Пользователи только с правом pull |
 | `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
@@ -296,7 +298,25 @@ docker push registry.example.com/public/myimage:latest
 | пользователь | есть в `RGSTR_USERS` | pull, push |
 | администратор | `RGSTR_ADMINS=alice` | pull, push, удаление тегов и blob'ов |
 
+Первый администратор из `RGSTR_ADMIN_USER` всегда имеет права администратора, даже если его нет в `RGSTR_ADMINS`.
+
 Если `RGSTR_ADMINS` не задан, удалять могут все пользователи, кроме read-only (как в версиях до 1.1.0). Права проверяются на каждый запрос: токен даёт ровно те действия, которые были запрошены в scope и разрешены ролью. Запрещённое действие возвращает `403 DENIED` при Basic-авторизации и `401` при Bearer-токене. Роль фиксируется в токене при выдаче, поэтому изменение ролей вступает в силу после перезапуска сервера и истечения ранее выданных токенов (`RGSTR_TOKEN_TTL`).
+
+### Первый администратор
+
+Чтобы не генерировать хеш для первого входа, задайте временный пароль прямо в env:
+
+```
+RGSTR_ADMIN_USER=admin          # по умолчанию admin
+RGSTR_ADMIN_PASSWORD=changeme
+```
+
+- С временным паролем можно только войти в `/ui`: интерфейс сразу попросит задать новый пароль (не короче 8 символов). `docker login` с временным паролем отклоняется с сообщением `password change required: sign in to the web UI at /ui`.
+- Новый пароль хранится в виде bcrypt-хеша в `<RGSTR_STORAGE>/users.json` (права `0600`) и переживает перезапуски. В Docker это том `/data`.
+- **Сброс забытого пароля:** задайте в env другое значение `RGSTR_ADMIN_PASSWORD` и перезапустите. Сохранённый пароль удаляется, новый временный снова требует смены при входе.
+- Если имя из `RGSTR_ADMIN_USER` есть и в `RGSTR_USERS`, действует временный пароль, а хеш из `RGSTR_USERS` для него игнорируется.
+
+Сменить пароль через `/ui` может любой пользователь, не только администратор. Для пользователей из `RGSTR_USERS` действует то же правило сброса: если поменять хеш пользователя в `RGSTR_USERS`, сохранённый пароль сбрасывается. Если удалить пользователя из `RGSTR_USERS`, его сохранённый пароль тоже удаляется. Уже выданные токены остаются действительными до истечения `RGSTR_TOKEN_TTL`.
 
 ---
 
@@ -474,6 +494,7 @@ https://registry.example.com/ui
 ```
 
 Возможности:
+- Смена пароля (кнопка «Change password» в шапке) для любого пользователя. Новый пароль хранится в виде bcrypt-хеша в `<RGSTR_STORAGE>/users.json` и действует и для `docker login`
 - Вход теми же пользователями, что и для `docker login`. Пароль обменивается на токен (`POST /ui/api/login`), в браузере хранится только токен — до закрытия вкладки и не дольше `RGSTR_TOKEN_TTL`, после чего интерфейс снова попросит войти
 - При `RGSTR_AUTH_ENABLED=false` форма входа не показывается
 - Статистика: количество репозиториев и pulls

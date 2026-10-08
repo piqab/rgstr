@@ -6,6 +6,7 @@ package ui
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -36,6 +37,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/", h.servePage)
 	mux.HandleFunc("/ui/api/me", h.handleMe)
 	mux.HandleFunc("/ui/api/login", h.handleLogin)
+	mux.HandleFunc("/ui/api/password", h.handlePassword)
 	mux.HandleFunc("/ui/api/repos", h.handleRepos)
 }
 
@@ -88,8 +90,16 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 		return
 	}
-	token, ok := h.auth.Login(req.Username, req.Password)
-	if !ok {
+	token, err := h.auth.Login(req.Username, req.Password)
+	switch {
+	case errors.Is(err, auth.ErrPasswordChangeRequired):
+		// The UI then asks for a new password and calls /ui/api/password.
+		writeJSON(w, http.StatusForbidden, map[string]interface{}{
+			"error":       err.Error(),
+			"must_change": true,
+		})
+		return
+	case err != nil:
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
@@ -98,6 +108,40 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"user":    req.Username,
 		"actions": h.auth.UserActions(req.Username),
 	})
+}
+
+// handlePassword changes a user's password. The current password proves
+// identity, so it also serves the forced change of the bootstrap password,
+// for which no session token can be issued.
+func (h *Handler) handlePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.auth.AuthEnabled() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "authentication is disabled"})
+		return
+	}
+	var req struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
+		return
+	}
+	err := h.auth.ChangePassword(req.Username, req.Password, req.NewPassword)
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is wrong"})
+	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrSamePassword):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // repoActions lists the actions access grants on every repository.

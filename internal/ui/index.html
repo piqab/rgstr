@@ -10,9 +10,11 @@ body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222}
 header{background:#1a1a2e;color:#fff;padding:14px 24px;display:flex;align-items:center;gap:12px}
 header h1{font-size:1.2rem;font-weight:600;letter-spacing:.05em}
 #hdr-user{font-size:.82rem;opacity:.7;margin-left:auto}
-#btn-logout{display:none;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:.82rem}
-#login-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:100}
-#login-overlay.show{display:flex}
+.hdr-btn{display:none;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:.82rem}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:100}
+.overlay.show{display:flex}
+.login-box .note{font-size:.82rem;color:#666;margin:-8px 0 16px;line-height:1.4}
+.login-box .secondary{background:none;color:#555;border:1px solid #ddd;margin-top:8px}
 .login-box{background:#fff;border-radius:8px;padding:32px;width:320px;max-width:calc(100% - 32px);box-shadow:0 4px 24px rgba(0,0,0,.2)}
 .login-box h2{margin-bottom:20px;font-size:1.1rem}
 .login-box label{display:block;font-size:.85rem;margin-bottom:4px;color:#555}
@@ -57,7 +59,7 @@ header h1{font-size:1.2rem;font-weight:600;letter-spacing:.05em}
 </head>
 <body>
 
-<div id="login-overlay">
+<div class="overlay" id="login-overlay">
   <form class="login-box" id="login-form">
     <h2>rgstr &mdash; sign in</h2>
     <label for="li-user">Username</label>
@@ -69,10 +71,29 @@ header h1{font-size:1.2rem;font-weight:600;letter-spacing:.05em}
   </form>
 </div>
 
+<div class="overlay" id="pw-overlay">
+  <form class="login-box" id="pw-form">
+    <h2 id="pw-title">Change password</h2>
+    <p class="note" id="pw-note"></p>
+    <div id="pw-current-wrap">
+      <label for="pw-current">Current password</label>
+      <input id="pw-current" type="password" autocomplete="current-password">
+    </div>
+    <label for="pw-new">New password</label>
+    <input id="pw-new" type="password" autocomplete="new-password" minlength="8" required>
+    <label for="pw-repeat">Repeat new password</label>
+    <input id="pw-repeat" type="password" autocomplete="new-password" minlength="8" required>
+    <button type="submit">Save password</button>
+    <button type="button" class="secondary" id="pw-cancel">Cancel</button>
+    <div class="err" id="pw-err"></div>
+  </form>
+</div>
+
 <header>
   <h1>rgstr</h1>
   <span id="hdr-user"></span>
-  <button id="btn-logout">Sign out</button>
+  <button class="hdr-btn" id="btn-password">Change password</button>
+  <button class="hdr-btn" id="btn-logout">Sign out</button>
 </header>
 
 <div id="app">
@@ -91,7 +112,11 @@ header h1{font-size:1.2rem;font-weight:600;letter-spacing:.05em}
 
 // The session token (never the password) lives in sessionStorage.
 let token = sessionStorage.getItem('rgstr_token') || '';
+let user = '';
 let actions = [];
+// Set while the user must replace the bootstrap password: the credentials
+// they signed in with, kept only until the change succeeds.
+let forced = null;
 let allRepos = [];
 const openRepos = new Set();
 
@@ -115,9 +140,7 @@ async function boot() {
     showApp();
   } else if (me.user) {
     actions = me.actions;
-    $('hdr-user').textContent = me.user;
-    $('btn-logout').style.display = 'block';
-    showApp();
+    signedIn(me.user);
   } else {
     showLogin(token ? 'Session expired, please sign in again' : '');
   }
@@ -125,21 +148,94 @@ async function boot() {
 
 async function doLogin(e) {
   e.preventDefault();
-  const res = await fetch('/ui/api/login', {
+  const username = $('li-user').value, password = $('li-pass').value;
+  const res = await login(username, password);
+  if (res.status === 403 && (await res.json()).must_change) {
+    // Bootstrap password: it only allows setting a new one.
+    forced = {username, password};
+    $('li-pass').value = '';
+    $('login-overlay').classList.remove('show');
+    openPasswordForm();
+    return;
+  }
+  if (!res.ok) { showLoginError('Invalid credentials'); return; }
+  await startSession(await res.json());
+}
+
+function login(username, password) {
+  return fetch('/ui/api/login', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({username: $('li-user').value, password: $('li-pass').value}),
+    body: JSON.stringify({username, password}),
   });
-  if (!res.ok) { showLoginError('Invalid credentials'); return; }
-  const s = await res.json();
+}
+
+async function startSession(s) {
   token = s.token;
   actions = s.actions;
   sessionStorage.setItem('rgstr_token', token);
   $('li-pass').value = '';
   $('login-overlay').classList.remove('show');
-  $('hdr-user').textContent = s.user;
+  signedIn(s.user);
+}
+
+function signedIn(name) {
+  user = name;
+  $('hdr-user').textContent = name;
+  $('btn-password').style.display = 'block';
   $('btn-logout').style.display = 'block';
   showApp();
+}
+
+// ── Password change ───────────────────────────────────────────────────────────
+
+function openPasswordForm() {
+  $('pw-form').reset();
+  showPasswordError('');
+  $('pw-title').textContent = forced ? 'Set a new password' : 'Change password';
+  $('pw-note').textContent = forced
+    ? 'You signed in with the initial password from the server configuration. Choose a new password (at least 8 characters) to continue.'
+    : '';
+  $('pw-note').style.display = forced ? 'block' : 'none';
+  $('pw-current-wrap').style.display = forced ? 'none' : 'block';
+  $('pw-current').required = !forced;
+  $('pw-overlay').classList.add('show');
+  (forced ? $('pw-new') : $('pw-current')).focus();
+}
+
+function closePasswordForm() {
+  $('pw-overlay').classList.remove('show');
+  if (forced) { forced = null; showLogin(''); }
+}
+
+async function doChangePassword(e) {
+  e.preventDefault();
+  const next = $('pw-new').value;
+  if (next !== $('pw-repeat').value) { showPasswordError('Passwords do not match'); return; }
+  const username = forced ? forced.username : user;
+  const password = forced ? forced.password : $('pw-current').value;
+  const res = await fetch('/ui/api/password', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username, password, new_password: next}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    showPasswordError(err.error || 'Failed: ' + res.status);
+    return;
+  }
+  $('pw-overlay').classList.remove('show');
+  if (forced) {
+    forced = null;
+    const s = await login(username, next);
+    if (s.ok) { await startSession(await s.json()); } else { showLogin('Sign in with your new password'); }
+  }
+  toast('Password changed');
+}
+
+function showPasswordError(msg) {
+  $('pw-err').textContent = msg || '';
+  $('pw-err').style.display = msg ? 'block' : 'none';
 }
 
 function showApp() {
@@ -150,7 +246,9 @@ function showApp() {
 function showLogin(msg) {
   token = '';
   sessionStorage.removeItem('rgstr_token');
+  user = '';
   $('app').style.display = 'none';
+  $('btn-password').style.display = 'none';
   $('btn-logout').style.display = 'none';
   $('hdr-user').textContent = '';
   $('login-overlay').classList.add('show');
@@ -267,6 +365,9 @@ $('repo-grid').addEventListener('click', e => {
 $('filter').addEventListener('input', applyFilter);
 $('login-form').addEventListener('submit', doLogin);
 $('btn-logout').addEventListener('click', () => showLogin(''));
+$('btn-password').addEventListener('click', openPasswordForm);
+$('pw-form').addEventListener('submit', doChangePassword);
+$('pw-cancel').addEventListener('click', closePasswordForm);
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
 

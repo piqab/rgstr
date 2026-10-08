@@ -370,12 +370,12 @@ func TestNoAdminsMeansEveryoneDeletes(t *testing.T) {
 
 func TestLoginToken(t *testing.T) {
 	h := newRoleHandler(t)
-	if _, ok := h.Login("bob", "wrong"); ok {
-		t.Fatal("login with wrong password succeeded")
+	if _, err := h.Login("bob", "wrong"); err != ErrInvalidCredentials {
+		t.Fatalf("login with wrong password: got %v want ErrInvalidCredentials", err)
 	}
-	tok, ok := h.Login("bob", "secret")
-	if !ok {
-		t.Fatal("login failed")
+	tok, err := h.Login("bob", "secret")
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
 	}
 	auth := map[string]string{"Authorization": "Bearer " + tok}
 	if code := serve(t, h, http.MethodGet, "/v2/_catalog", auth); code != http.StatusOK {

@@ -25,6 +25,14 @@ type Config struct {
 	// Format: "alice:$2b$...,bob:$2b$..."
 	Users map[string]string
 
+	// AdminUser / AdminPassword define a bootstrap admin with a plain-text
+	// password (RGSTR_ADMIN_USER, default "admin"; RGSTR_ADMIN_PASSWORD).
+	// The password only allows setting a new one in the web UI; the new
+	// password is stored hashed in <storage>/users.json. Changing
+	// RGSTR_ADMIN_PASSWORD later resets the stored password.
+	AdminUser     string
+	AdminPassword string
+
 	// Admins may delete manifests and blobs (RGSTR_ADMINS). When empty, every
 	// non-read-only user may delete — the behaviour before roles existed.
 	Admins []string
@@ -60,6 +68,8 @@ func Load() *Config {
 		TokenTTL:    envDuration("RGSTR_TOKEN_TTL", time.Hour),
 
 		Users:         parseUsers(env("RGSTR_USERS", "")),
+		AdminUser:     env("RGSTR_ADMIN_USER", "admin"),
+		AdminPassword: os.Getenv("RGSTR_ADMIN_PASSWORD"),
 		Admins:        parseList(env("RGSTR_ADMINS", "")),
 		ReadOnlyUsers: parseList(env("RGSTR_READONLY_USERS", "")),
 		PublicRepos:   parseList(env("RGSTR_PUBLIC_REPOS", "")),

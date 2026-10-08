@@ -5,12 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path"
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 	"rgstr/internal/config"
 )
 
@@ -39,11 +39,17 @@ type Handler struct {
 	cfg      *config.Config
 	tokenSvc *TokenService
 	inner    http.Handler
+	creds    *credentials
 }
 
-// NewHandler creates an auth handler that protects inner.
+// NewHandler creates an auth handler that protects inner. It exits if the
+// stored passwords file (<storage>/users.json) exists but cannot be read.
 func NewHandler(cfg *config.Config, tokenSvc *TokenService, inner http.Handler) *Handler {
-	return &Handler{cfg: cfg, tokenSvc: tokenSvc, inner: inner}
+	creds, err := loadCredentials(cfg)
+	if err != nil {
+		log.Fatalf("auth: load stored passwords: %v", err)
+	}
+	return &Handler{cfg: cfg, tokenSvc: tokenSvc, inner: inner, creds: creds}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +114,11 @@ func (h *Handler) Authenticate(r *http.Request) (subject string, access []Access
 
 	case strings.HasPrefix(hdr, "Basic "):
 		user, pass, err := parseBasic(hdr)
-		if err != nil || !h.checkPassword(user, pass) {
+		if err != nil {
+			return "", nil, false
+		}
+		// The bootstrap password only allows changing it in the web UI.
+		if ok, mustChange := h.creds.check(user, pass); !ok || mustChange {
 			return "", nil, false
 		}
 		return user, h.FullAccess(user), true
@@ -146,7 +156,15 @@ func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 		password = r.Form.Get("password")
 	}
 
-	authenticated := !h.cfg.AuthEnabled || h.checkPassword(username, password)
+	valid, mustChange := h.creds.check(username, password)
+	if h.cfg.AuthEnabled && valid && mustChange {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(errBody("UNAUTHORIZED",
+			"password change required: sign in to the web UI at /ui and set a new password"))
+		return
+	}
+	authenticated := !h.cfg.AuthEnabled || valid
 
 	// Parse requested scopes. Clients may repeat scope= or separate scopes
 	// with spaces.
@@ -232,28 +250,24 @@ func (h *Handler) challenge(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(errBody("UNAUTHORIZED", "authentication required"))
 }
 
-func (h *Handler) checkPassword(username, password string) bool {
-	if username == "" {
-		return false
-	}
-	hash, ok := h.cfg.Users[username]
-	if !ok {
-		return false
-	}
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
-}
-
 // Login checks credentials and issues a token carrying the user's full
 // role-based access. Used by the web UI so it never stores the password.
-func (h *Handler) Login(username, password string) (token string, ok bool) {
-	if !h.checkPassword(username, password) {
-		return "", false
+// Returns ErrPasswordChangeRequired for the bootstrap password.
+func (h *Handler) Login(username, password string) (string, error) {
+	ok, mustChange := h.creds.check(username, password)
+	switch {
+	case !ok:
+		return "", ErrInvalidCredentials
+	case mustChange:
+		return "", ErrPasswordChangeRequired
 	}
-	token, err := h.tokenSvc.Issue(username, h.FullAccess(username))
-	if err != nil {
-		return "", false
-	}
-	return token, true
+	return h.tokenSvc.Issue(username, h.FullAccess(username))
+}
+
+// ChangePassword sets a new password for username after verifying the
+// current one (which may be the bootstrap password).
+func (h *Handler) ChangePassword(username, current, next string) error {
+	return h.creds.change(username, current, next)
 }
 
 // AuthEnabled reports whether authentication is switched on.
@@ -270,7 +284,7 @@ func (h *Handler) UserActions(username string) []string {
 		return allActions
 	case contains(h.cfg.ReadOnlyUsers, username):
 		return []string{"pull"}
-	case len(h.cfg.Admins) == 0 || contains(h.cfg.Admins, username):
+	case len(h.cfg.Admins) == 0 || contains(h.cfg.Admins, username) || h.creds.isBootstrap(username):
 		return allActions
 	default:
 		return []string{"pull", "push"}

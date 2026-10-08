@@ -36,7 +36,10 @@ func newAuthTestServer(t *testing.T, publicRepos ...string) *httptest.Server {
 		Users:       map[string]string{"alice": string(hash), "bob": string(hash)},
 		Admins:      []string{"alice"},
 		PublicRepos: publicRepos,
-		StorageRoot: t.TempDir(),
+		// Bootstrap admin with a plain password that must be changed.
+		AdminUser:     "admin",
+		AdminPassword: "changeme",
+		StorageRoot:   t.TempDir(),
 	}
 	store, err := storage.NewFilesystem(cfg.StorageRoot, cfg)
 	if err != nil {
@@ -251,5 +254,43 @@ func TestUILoginFlow(t *testing.T) {
 	// bob is not an admin: deleting is forbidden even with his session token.
 	if r := do(t, "DELETE", srv.URL+"/v2/app/manifests/latest", nil, bearer); r.StatusCode != http.StatusUnauthorized {
 		t.Errorf("non-admin delete: got %d want 401", r.StatusCode)
+	}
+}
+
+func TestUIForcedPasswordChange(t *testing.T) {
+	srv := newAuthTestServer(t)
+	post := func(path, body string) *http.Response {
+		return do(t, "POST", srv.URL+path, []byte(body), map[string]string{"Content-Type": "application/json"})
+	}
+
+	r := post("/ui/api/login", `{"username":"admin","password":"changeme"}`)
+	var body struct {
+		MustChange bool `json:"must_change"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden || !body.MustChange {
+		t.Fatalf("bootstrap login: got %d must_change=%v, want 403 true", r.StatusCode, body.MustChange)
+	}
+
+	if r := post("/ui/api/password", `{"username":"admin","password":"changeme","new_password":"short"}`); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("weak password: got %d want 400", r.StatusCode)
+	}
+	if r := post("/ui/api/password", `{"username":"admin","password":"nope","new_password":"long-enough"}`); r.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong current password: got %d want 401", r.StatusCode)
+	}
+	if r := post("/ui/api/password", `{"username":"admin","password":"changeme","new_password":"long-enough"}`); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("change: got %d want 204", r.StatusCode)
+	}
+
+	r = post("/ui/api/login", `{"username":"admin","password":"long-enough"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Errorf("login with new password: got %d want 200", r.StatusCode)
+	}
+	resp := do(t, "GET", srv.URL+"/v2/_catalog", nil, map[string]string{"Authorization": "Basic YWRtaW46bG9uZy1lbm91Z2g="}) // admin:long-enough
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("registry access with new password: got %d want 200", resp.StatusCode)
 	}
 }
