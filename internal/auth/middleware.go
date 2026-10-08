@@ -2,7 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -130,8 +133,8 @@ func (h *Handler) Authenticate(r *http.Request) (subject string, access []Access
 		if err != nil {
 			return "", nil, false
 		}
-		// The bootstrap password only allows changing it in the web UI.
-		if ok, mustChange := h.creds.check(user, pass); !ok || mustChange {
+		// A temporary password only allows changing it in the web UI.
+		if ok, mustChange := h.check(user, pass); !ok || mustChange {
 			return "", nil, false
 		}
 		return user, h.FullAccess(user), true
@@ -169,7 +172,7 @@ func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 		password = r.Form.Get("password")
 	}
 
-	valid, mustChange := h.creds.check(username, password)
+	valid, mustChange := h.check(username, password)
 	if h.cfg.AuthEnabled && username != "" && !valid {
 		h.audit.Add(audit.Entry{User: username, IP: audit.ClientIP(r), Action: audit.LoginFailed, Detail: "docker"})
 	}
@@ -270,6 +273,9 @@ func (h *Handler) challenge(w http.ResponseWriter, r *http.Request) {
 // role-based access. Used by the web UI so it never stores the password.
 // Returns ErrPasswordChangeRequired for the bootstrap password.
 func (h *Handler) Login(username, password string) (string, error) {
+	if IsRobot(username) {
+		return "", ErrInvalidCredentials // robots use docker login only
+	}
 	ok, mustChange := h.creds.check(username, password)
 	switch {
 	case !ok:
@@ -304,6 +310,9 @@ func (h *Handler) Can(subject, repo, action string) bool {
 	}
 	if action == "pull" && h.isPublicRepo(repo) {
 		return true
+	}
+	if IsRobot(subject) {
+		return h.robotCan(subject, repo, action)
 	}
 	if !h.creds.exists(subject) {
 		return false
@@ -361,7 +370,60 @@ func (h *Handler) IsAdmin(subject string) bool {
 	if !h.cfg.AuthEnabled {
 		return true
 	}
-	return h.creds.exists(subject) && h.Role(subject) == RoleAdmin
+	return !IsRobot(subject) && h.creds.exists(subject) && h.Role(subject) == RoleAdmin
+}
+
+// ─── Robot accounts ──────────────────────────────────────────────────────────
+
+// IsRobot reports whether name is a robot account.
+func IsRobot(name string) bool { return strings.HasPrefix(name, meta.RobotPrefix) }
+
+// HashSecret returns the stored form of a robot secret.
+func HashSecret(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
+
+// check verifies a password or robot secret. mustChange reports a
+// temporary password.
+func (h *Handler) check(user, password string) (ok, mustChange bool) {
+	if !IsRobot(user) {
+		return h.creds.check(user, password)
+	}
+	r, found := h.robot(user)
+	if !found {
+		return false, false
+	}
+	got := HashSecret(password)
+	return subtle.ConstantTimeCompare([]byte(got), []byte(r.SecretHash)) == 1, false
+}
+
+// robot returns an active robot account.
+func (h *Handler) robot(name string) (meta.Robot, bool) {
+	if h.meta == nil {
+		return meta.Robot{}, false
+	}
+	r, ok := h.meta.Robot(name)
+	if !ok || !r.Active(time.Now()) {
+		return meta.Robot{}, false
+	}
+	return r, true
+}
+
+// robotCan checks a robot's explicit permissions. A disabled, expired or
+// deleted robot can do nothing, even with an unexpired token.
+func (h *Handler) robotCan(name, repo, action string) bool {
+	r, ok := h.robot(name)
+	if !ok {
+		return false
+	}
+	project := meta.ProjectOf(repo)
+	for _, p := range r.Permissions {
+		if (p.Project == "*" || (project != "" && p.Project == project)) && contains(p.Actions, action) {
+			return true
+		}
+	}
+	return false
 }
 
 // Role returns the user's role: set in the admin for users created there;

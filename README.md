@@ -339,6 +339,22 @@ RGSTR_ADMIN_PASSWORD=changeme
 - Удалить можно только пустой проект — сначала удалите его репозитории.
 - Проекты хранятся в `<RGSTR_STORAGE>/meta.json`.
 
+### Robot-аккаунты
+
+Для CI и автоматизации администратор создаёт robot-аккаунты на странице «Robots»:
+
+- имя вида `robot$ci`, вместо пароля — сгенерированный секрет. Секрет показывается один раз, хранится только его хеш; при утечке его можно перевыпустить (старый сразу перестаёт работать);
+- права перечисляются явно: проект (или «все репозитории») и действия pull/push/delete. Робот с правом на конкретный проект не имеет доступа к репозиториям вне проектов;
+- срок действия (30/90/180/365 дней или бессрочно), отключение. Отключённый, истёкший или удалённый робот теряет доступ сразу;
+- робот работает только через `docker login`, в веб-админку войти не может.
+
+```bash
+# имя в одинарных кавычках — в нём есть «$»
+echo "$ROBOT_SECRET" | docker login registry.example.com -u 'robot$ci' --password-stdin
+```
+
+Роботы хранятся в `<RGSTR_STORAGE>/meta.json`.
+
 ### Пользователи в админке
 
 На странице «Users» администратор может:
@@ -582,6 +598,11 @@ https://registry.example.com/ui
 | `POST` | `/ui/api/projects/update` | `{"name","description","public","quota_bytes"}` (админ проекта; квота — администратор) |
 | `POST` | `/ui/api/projects/member` | `{"name","user","role"}`; пустая роль — убрать участника (админ проекта) |
 | `POST` | `/ui/api/projects/delete` | `{"name"}` — только пустой проект (администратор) |
+| `GET` | `/ui/api/robots` | Robot-аккаунты (администратор) |
+| `POST` | `/ui/api/robots/create` | `{"name","description","permissions":[{"project","actions"}],"expires_days"}` → `{"name","secret"}` |
+| `POST` | `/ui/api/robots/update` | `{"name","description","permissions","expires_days","disabled"}` |
+| `POST` | `/ui/api/robots/secret` | `{"name"}` → новый `{"secret"}` |
+| `POST` | `/ui/api/robots/delete` | `{"name"}` |
 | `GET` | `/ui/api/audit` | Журнал: `?user=&action=&q=&before=&limit=` (администратор) |
 | `POST` | `/ui/api/gc/settings` | `{"interval":"6h"}` — расписание; `"0"` — выключить, `""` — значение из env (администратор) |
 

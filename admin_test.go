@@ -450,3 +450,58 @@ func TestUIProjects(t *testing.T) {
 		t.Errorf("delete empty project: got %d", r.StatusCode)
 	}
 }
+
+func TestUIRobots(t *testing.T) {
+	srv := newAuthTestServer(t)
+	alice := map[string]string{"Authorization": "Basic YWxpY2U6c2VjcmV0"}
+	bob := map[string]string{"Authorization": "Basic Ym9iOnNlY3JldA=="}
+
+	if r := postJSON(t, srv.URL+"/ui/api/robots/create", `{"name":"ci","permissions":[{"project":"*","actions":["pull"]}]}`, bob); r.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin create: got %d", r.StatusCode)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/robots/create", `{"name":"ci","permissions":[]}`, alice); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("no permissions: got %d", r.StatusCode)
+	}
+	create := func() (name, secret string) {
+		r := postJSON(t, srv.URL+"/ui/api/robots/create", `{"name":"ci","permissions":[{"project":"*","actions":["pull","push"]}],"expires_days":30}`, alice)
+		var res struct{ Name, Secret string }
+		json.NewDecoder(r.Body).Decode(&res)
+		r.Body.Close()
+		return res.Name, res.Secret
+	}
+	name, secret := create()
+	if name != "robot$ci" || len(secret) < 40 {
+		t.Fatalf("create: %q %q", name, secret)
+	}
+	robot := func(secret string) map[string]string {
+		req, _ := http.NewRequest("GET", "/", nil)
+		req.SetBasicAuth(name, secret)
+		return map[string]string{"Authorization": req.Header.Get("Authorization")}
+	}
+	if code := status(t, "POST", srv.URL+"/v2/x/blobs/uploads/", robot(secret)); code != http.StatusAccepted {
+		t.Errorf("robot push: got %d want 202", code)
+	}
+	// Robots cannot use the admin API.
+	if code := status(t, "GET", srv.URL+"/ui/api/repos", robot(secret)); code != http.StatusUnauthorized {
+		t.Errorf("robot admin API: got %d want 401", code)
+	}
+
+	r := postJSON(t, srv.URL+"/ui/api/robots/secret", `{"name":"robot$ci"}`, alice)
+	var res struct{ Secret string }
+	json.NewDecoder(r.Body).Decode(&res)
+	r.Body.Close()
+	if code := status(t, "GET", srv.URL+"/v2/_catalog", robot(secret)); code != http.StatusUnauthorized {
+		t.Errorf("old secret after regenerate: got %d want 401", code)
+	}
+	if code := status(t, "GET", srv.URL+"/v2/x/manifests/1", robot(res.Secret)); code == http.StatusUnauthorized {
+		t.Errorf("new secret rejected")
+	}
+
+	postJSON(t, srv.URL+"/ui/api/robots/update", `{"name":"robot$ci","permissions":[{"project":"*","actions":["pull"]}],"disabled":true}`, alice).Body.Close()
+	if code := status(t, "GET", srv.URL+"/v2/x/manifests/1", robot(res.Secret)); code != http.StatusUnauthorized {
+		t.Errorf("disabled robot: got %d want 401", code)
+	}
+	if r := postJSON(t, srv.URL+"/ui/api/robots/delete", `{"name":"robot$ci"}`, alice); r.StatusCode != http.StatusNoContent {
+		t.Errorf("delete: got %d", r.StatusCode)
+	}
+}

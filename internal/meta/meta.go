@@ -21,6 +21,43 @@ type Data struct {
 	RetentionHistory []RetentionRun     `json:"retention_history,omitempty"`
 	Immutable        []ImmutableRule    `json:"immutable,omitempty"`
 	Projects         map[string]Project `json:"projects,omitempty"`
+	Robots           map[string]Robot   `json:"robots,omitempty"`
+}
+
+// RobotPrefix starts every robot account name.
+const RobotPrefix = "robot$"
+
+// Robot is a machine account for CI: a secret instead of a password and
+// explicit per-project permissions.
+type Robot struct {
+	Name        string            `json:"name"` // full name, "robot$…"
+	Description string            `json:"description,omitempty"`
+	SecretHash  string            `json:"secret_hash"` // hex SHA-256 of the secret
+	Permissions []RobotPermission `json:"permissions"`
+	ExpiresAt   *time.Time        `json:"expires_at,omitempty"`
+	Disabled    bool              `json:"disabled,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	CreatedBy   string            `json:"created_by,omitempty"`
+}
+
+// RobotPermission grants actions in a project ("*" = every repository).
+type RobotPermission struct {
+	Project string   `json:"project"`
+	Actions []string `json:"actions"`
+}
+
+// Active reports whether the robot may authenticate at time now.
+func (r Robot) Active(now time.Time) bool {
+	return !r.Disabled && (r.ExpiresAt == nil || now.Before(*r.ExpiresAt))
+}
+
+// Robot returns a copy of the named robot.
+func (s *Store) Robot(name string) (Robot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.data.Robots[name]
+	r.Permissions = append([]RobotPermission(nil), r.Permissions...)
+	return r, ok
 }
 
 // Project roles.

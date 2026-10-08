@@ -86,6 +86,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/projects/update", h.handleProjectUpdate)
 	mux.HandleFunc("/ui/api/projects/member", h.handleProjectMember)
 	mux.HandleFunc("/ui/api/projects/delete", h.handleProjectDelete)
+
+	mux.HandleFunc("/ui/api/robots", h.handleRobots)
+	mux.HandleFunc("/ui/api/robots/create", h.handleRobotCreate)
+	mux.HandleFunc("/ui/api/robots/update", h.handleRobotUpdate)
+	mux.HandleFunc("/ui/api/robots/secret", h.handleRobotSecret)
+	mux.HandleFunc("/ui/api/robots/delete", h.handleRobotDelete)
 }
 
 // servePage serves the app shell; navigation happens client-side (#hash).
@@ -119,7 +125,7 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) (user string, 
 		return "", true
 	}
 	subject, _, ok := h.auth.Authenticate(r)
-	if !ok || subject == "" {
+	if !ok || subject == "" || auth.IsRobot(subject) {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return "", false
 	}

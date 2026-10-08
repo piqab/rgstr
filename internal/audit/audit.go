@@ -38,6 +38,10 @@ const (
 	ProjectUpdate  = "project_update"
 	ProjectDelete  = "project_delete"
 	ProjectMember  = "project_member"
+	RobotCreate    = "robot_create"
+	RobotUpdate    = "robot_update"
+	RobotSecret    = "robot_secret"
+	RobotDelete    = "robot_delete"
 )
 
 // Entry is one audit record.
