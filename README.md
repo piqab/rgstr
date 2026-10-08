@@ -114,7 +114,7 @@ echo <TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
 По умолчанию берётся образ `ghcr.io/piqab/rgstr:latest`. Зафиксировать версию — переменной `RGSTR_VERSION` (в `.env` или в окружении):
 
 ```bash
-echo "RGSTR_VERSION=1.1.1" >> .env
+echo "RGSTR_VERSION=1.1.2" >> .env
 docker compose pull && docker compose up -d
 ```
 
