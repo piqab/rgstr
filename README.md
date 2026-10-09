@@ -381,6 +381,51 @@ echo "$ROBOT_SECRET" | docker login registry.example.com -u 'robot$ci' --passwor
 
 Для пользователей, созданных в админке, правило «если `RGSTR_ADMINS` пуст, удалять могут все» не действует: их права определяет только роль.
 
+### Сброс пароля администратора
+
+Способ зависит от того, где задан администратор. Колонка «Source» на странице «Users» показывает это: `first admin`, `env` или `created here`.
+
+**Если есть другой администратор** — проще всего: «Users» → «Reset password» у нужного пользователя. Можно сразу отметить «Require a password change at the first sign-in».
+
+**Первый администратор (`RGSTR_ADMIN_USER` / `RGSTR_ADMIN_PASSWORD`).** Задайте новый временный пароль в env и перезапустите — сохранённый пароль удалится:
+
+```bash
+# Docker Compose: отредактируйте .env
+RGSTR_ADMIN_PASSWORD=new-temporary-password
+docker compose up -d          # именно up -d: restart не перечитывает .env
+
+# systemd: отредактируйте /etc/rgstr/env
+sudo systemctl restart rgstr
+```
+
+Войдите в `/ui` как `admin` с этим паролем — админка попросит задать постоянный. Если потом снова вернуть в env старое значение, забытый пароль не восстановится.
+
+**Администратор из `RGSTR_USERS`.** Сгенерируйте новый хеш и замените его в `RGSTR_USERS` — пароль, сохранённый в админке, сбросится, и снова будет действовать хеш из env:
+
+```bash
+docker run --rm --entrypoint /mkpasswd ghcr.io/piqab/rgstr alice new-password
+# RGSTR_USERS='alice:$2a$10$...'  → заменить запись alice, затем docker compose up -d / systemctl restart rgstr
+```
+
+**Администратор, созданный в админке, и других администраторов нет.** Временно включите первого администратора с отдельным именем, войдите им и сбросьте пароль на странице «Users»:
+
+```bash
+# .env или /etc/rgstr/env
+RGSTR_ADMIN_USER=recovery
+RGSTR_ADMIN_PASSWORD=temporary-recovery-password
+docker compose up -d   # или sudo systemctl restart rgstr
+```
+
+1. Войдите в `/ui` как `recovery`, задайте ему постоянный пароль (админка попросит).
+2. «Users» → «Reset password» у забывшего пароль администратора, с галочкой «Require a password change at the first sign-in».
+3. Уберите `RGSTR_ADMIN_USER` и `RGSTR_ADMIN_PASSWORD` из env и снова выполните `docker compose up -d` / `systemctl restart rgstr` — `recovery` перестанет работать.
+
+Используйте для восстановления имя, которого нет среди пользователей: если имя совпадёт с пользователем, созданным в админке, env «перекроет» его, и этот пользователь будет удалён из `users.json`.
+
+**Если доступа к env нет, но есть к данным.** Пароли пользователей хранятся в `<RGSTR_STORAGE>/users.json` (bcrypt). Удаление записи пользователя из этого файла при остановленном реестре: для пользователя из env вернёт пароль из env, пользователя, созданного в админке, удалит целиком.
+
+После сброса уже открытые сессии и `docker login` со старым паролем действуют, пока не истечёт их токен (`RGSTR_TOKEN_TTL`, по умолчанию 1 час). Каждый сброс записывается в журнал действий.
+
 ---
 
 ## Аутентификация
@@ -438,6 +483,38 @@ RGSTR_TLS_KEY=/etc/letsencrypt/live/registry.example.com/privkey.pem \
 ## fail2ban
 
 Неудачные входы (`docker login`, веб-админка, неверный текущий пароль при смене) пишутся в `<RGSTR_STORAGE>/audit.log` с IP клиента. В `deploy/fail2ban/` лежат фильтр и jail: 5 неудачных попыток за 10 минут — бан на час.
+
+Фильтр `/etc/fail2ban/filter.d/rgstr.conf`:
+
+```ini
+[Definition]
+# fail2ban вырезает найденную дату ({"time":"2026-10-08T10:44:00) из строки
+# до проверки failregex, поэтому выражение начинается с долей секунды.
+failregex = ^(?:\.\d+)?Z","user":"(?:[^"\\]|\\.)*","ip":"<HOST>","action":"login_failed"
+ignoreregex =
+datepattern = ^\{"time":"%%Y-%%m-%%dT%%H:%%M:%%S
+```
+
+Jail `/etc/fail2ban/jail.d/rgstr.local`:
+
+```ini
+[rgstr]
+enabled     = true
+filter      = rgstr
+logpath     = /var/lib/rgstr/audit.log
+# Docker Compose с volume rgstr-data:
+# logpath   = /var/lib/docker/volumes/rgstr-data/_data/audit.log
+logtimezone = UTC
+backend     = polling
+maxretry    = 5
+findtime    = 10m
+bantime     = 1h
+port        = 5000,http,https
+# rgstr в Docker с опубликованным портом:
+# banaction = iptables-multiport[chain="DOCKER-USER"]
+```
+
+Установка из репозитория (или из архива релиза):
 
 ```bash
 sudo cp deploy/fail2ban/filter.d/rgstr.conf /etc/fail2ban/filter.d/
