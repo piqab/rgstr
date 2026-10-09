@@ -667,6 +667,7 @@ type UserInfo struct {
 	Role       string     `json:"role"`
 	Actions    []string   `json:"actions"`
 	MustChange bool       `json:"must_change"`
+	Managed    bool       `json:"managed"` // stored in users.json: role editable, deletable
 	Changed    *time.Time `json:"password_changed,omitempty"`
 	Created    *time.Time `json:"created,omitempty"`
 }
@@ -684,10 +685,13 @@ func (h *Handler) Users() []UserInfo {
 			u.MustChange = sp.MustChange
 			changed := sp.ChangedAt
 			u.Changed = &changed
-			if sp.Managed {
+			u.Managed = sp.Managed
+			if sp.Managed && sp.Base == "" {
 				u.Source = "admin"
 				created := sp.CreatedAt
 				u.Created = &created
+			} else if sp.Managed {
+				u.Source = "bootstrap" // first admin with its own password
 			}
 		}
 		out = append(out, u)

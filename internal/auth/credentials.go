@@ -97,14 +97,32 @@ func loadCredentials(cfg *config.Config) (*credentials, error) {
 	stale := false
 	for user, sp := range f.Users {
 		env := c.envCredential(user)
+		_, inEnvUsers := c.cfg.Users[user]
+		baseMatches := sp.Base != "" && env != "" &&
+			bcrypt.CompareHashAndPassword([]byte(sp.Base), []byte(env)) == nil
 		switch {
+		case sp.Managed && sp.Base != "":
+			// The first admin after setting their own password: kept even
+			// when RGSTR_ADMIN_PASSWORD is removed; a new value resets it.
+			if env != "" && !baseMatches {
+				log.Printf("auth: password of %q reset by RGSTR_ADMIN_PASSWORD", user)
+				stale = true
+				continue
+			}
+			c.users[user] = sp
 		case sp.Managed && env != "":
 			// A user of the same name was added to env later: env wins.
 			log.Printf("auth: user %q from the admin is shadowed by env; using env", user)
 			stale = true
 		case sp.Managed:
 			c.users[user] = sp
-		case env == "" || bcrypt.CompareHashAndPassword([]byte(sp.Base), []byte(env)) != nil:
+		case !inEnvUsers && user == c.cfg.AdminUser && (env == "" || baseMatches):
+			// First admin stored by rgstr ≤1.5.0: make it independent of env
+			// (it used to vanish when RGSTR_ADMIN_PASSWORD was removed).
+			sp.Managed, sp.Role = true, RoleAdmin
+			c.users[user] = sp
+			stale = true
+		case env == "" || !baseMatches:
 			// User removed from env, or its env credential was reset.
 			stale = true
 		default:
@@ -207,17 +225,24 @@ func (c *credentials) setPassword(user, password string, mustChange bool) error 
 	defer c.mu.Unlock()
 
 	sp, found := c.users[user]
-	if !found || !sp.Managed {
+	if !found || sp.Base != "" || !sp.Managed {
 		// Env user: remember which env credential this password replaces.
 		env := c.envCredential(user)
-		if env == "" {
+		if env == "" && !(found && sp.Managed) {
 			return ErrUserNotFound
 		}
-		base, err := bcrypt.GenerateFromPassword([]byte(env), bcrypt.DefaultCost)
-		if err != nil {
-			return err
+		if env != "" {
+			base, err := bcrypt.GenerateFromPassword([]byte(env), bcrypt.DefaultCost)
+			if err != nil {
+				return err
+			}
+			sp.Base = string(base)
 		}
-		sp.Base = string(base)
+		// The first admin's account lives on in users.json once it has its
+		// own password, independent of RGSTR_ADMIN_PASSWORD.
+		if c.isBootstrap(user) {
+			sp.Managed, sp.Role = true, RoleAdmin
+		}
 	}
 	sp.Hash = string(hash)
 	sp.MustChange = mustChange

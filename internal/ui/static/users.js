@@ -32,7 +32,7 @@
 
   function row(u) {
     const me = u.name === data.me;
-    const editable = u.source === 'admin' && !me;
+    const editable = u.managed && !me;
     const roleCell = editable
       ? `<select data-act="role" data-name="${esc(u.name)}" style="padding:4px 6px">
           ${['admin', 'user', 'readonly'].map(r => `<option value="${r}" ${r === u.role ? 'selected' : ''}>${esc(t('role.' + r))}</option>`).join('')}

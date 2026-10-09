@@ -290,3 +290,49 @@ func TestLegacyDeleteRuleOnlyForEnvUsers(t *testing.T) {
 		t.Error("managed user got the legacy delete right")
 	}
 }
+
+// Removing RGSTR_ADMIN_PASSWORD after the first admin set its own password
+// must not delete the account (it did up to 1.5.0).
+func TestFirstAdminSurvivesEnvRemoval(t *testing.T) {
+	cfg := bootstrapCfg(t)
+	if err := handlerFor(cfg).ChangePassword("admin", "changeme", "own-password"); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AdminPassword = ""
+	h := handlerFor(cfg)
+	if _, err := h.Login("admin", "own-password"); err != nil {
+		t.Fatalf("login after removing RGSTR_ADMIN_PASSWORD: %v", err)
+	}
+	if !h.IsAdmin("admin") {
+		t.Error("first admin lost admin rights")
+	}
+	// Setting it again to the same value changes nothing…
+	cfg.AdminPassword = "changeme"
+	if _, err := handlerFor(cfg).Login("admin", "own-password"); err != nil {
+		t.Errorf("same env value again: %v", err)
+	}
+	// …a new value resets the password.
+	cfg.AdminPassword = "reset-value"
+	h = handlerFor(cfg)
+	if _, err := h.Login("admin", "reset-value"); err != ErrPasswordChangeRequired {
+		t.Errorf("new env value: got %v want ErrPasswordChangeRequired", err)
+	}
+	// The recovery account can be deleted in the admin.
+	h.ChangePassword("admin", "reset-value", "after-reset")
+	if err := h.DeleteUser("admin"); err != nil {
+		t.Errorf("delete first admin: %v", err)
+	}
+}
+
+// Entries written by older versions (not marked managed) are migrated.
+func TestLegacyFirstAdminEntryMigrated(t *testing.T) {
+	cfg := bootstrapCfg(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("own-password"), bcrypt.MinCost)
+	base, _ := bcrypt.GenerateFromPassword([]byte("changeme"), bcrypt.MinCost)
+	legacy := `{"users":{"admin":{"hash":"` + string(hash) + `","base":"` + string(base) + `","changed_at":"2026-10-01T00:00:00Z"}}}`
+	os.WriteFile(filepath.Join(cfg.StorageRoot, "users.json"), []byte(legacy), 0600)
+	cfg.AdminPassword = ""
+	if _, err := handlerFor(cfg).Login("admin", "own-password"); err != nil {
+		t.Errorf("legacy first admin without env: %v", err)
+	}
+}
