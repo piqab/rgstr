@@ -1,4 +1,7 @@
 *{box-sizing:border-box;margin:0;padding:0}
+/* Horizontal swipes (touchpad, touchscreen) must not trigger the browser's
+   back/forward navigation, which would jump between admin pages. */
+html,body{overscroll-behavior-x:none}
 body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222;font-size:15px}
 a{color:#1a1a2e}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -63,7 +66,7 @@ table.tbl{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;
 .tbl td{padding:9px 12px;border-bottom:1px solid #f3f3f3;vertical-align:top}
 .tbl tr:last-child td{border-bottom:none}
 .tbl .actions{text-align:right;white-space:nowrap}
-.tbl-wrap{overflow-x:auto}
+.tbl-wrap{overflow-x:auto;overscroll-behavior-x:contain}
 .badge{display:inline-block;font-size:.72rem;background:#f0f0f5;color:#444;border-radius:3px;padding:2px 6px;white-space:nowrap}
 .badge-ok{background:#e6f6ea;color:#1b7a34}
 .badge-warn{background:#fff4e0;color:#9a5b00}
@@ -134,3 +137,7 @@ a.badge:hover{background:#e4e4ee}
 .banner{background:#fde8e8;color:#8a1010;padding:10px 24px;font-size:.9rem;display:flex;gap:12px;justify-content:center}
 .banner a{color:#8a1010;font-weight:600}
 .stat-card .bar{max-width:none;margin-top:8px}
+
+/* Scrollable blocks keep their scrolling to themselves: reaching the edge
+   must not scroll the page or turn into a back/forward swipe. */
+pre,.dialog{overscroll-behavior:contain}
