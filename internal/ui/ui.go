@@ -66,6 +66,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/images/delete", h.handleDeleteImage)
 	mux.HandleFunc("/ui/api/image", h.handleImage)
 
+	mux.HandleFunc("/ui/api/disk", h.handleDisk)
 	mux.HandleFunc("/ui/api/gc", h.handleGC)
 	mux.HandleFunc("/ui/api/gc/run", h.handleGCRun)
 	mux.HandleFunc("/ui/api/gc/settings", h.handleGCSettings)

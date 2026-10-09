@@ -158,6 +158,9 @@ func (r *Runner) Run(trigger, user string, opts storage.GCOptions) (meta.GCRun, 
 	if err != nil {
 		run.Error = err.Error()
 	}
+	if !opts.DryRun && err == nil {
+		run.Freed = r.reconcile()
+	}
 
 	r.ops.Audit(actor(user), audit.GCRun, "", gcDetail(run), err)
 	if serr := r.meta.Update(func(d *meta.Data) error {
@@ -228,4 +231,108 @@ func gcDetail(r meta.GCRun) string {
 		d += ", no grace period"
 	}
 	return d
+}
+
+// reconcile drops pending entries whose data is gone (returning them as
+// freed) and entries older than the grace period plus a day whose data is
+// still used by other images.
+func (r *Runner) reconcile() []string {
+	var pending []meta.PendingFree
+	r.meta.View(func(d *meta.Data) { pending = append(pending, d.PendingFree...) })
+	if len(pending) == 0 {
+		return nil
+	}
+	var freed []string
+	var keep []meta.PendingFree
+	for _, p := range pending {
+		_, present := r.store.BlobsSize(p.Blobs)
+		switch {
+		case present == 0:
+			freed = append(freed, p.Kind+" "+p.Ref)
+		case time.Since(p.Time) > r.cfg.UploadTTL+24*time.Hour:
+			// Still on disk long after the grace period: shared with
+			// images that are in use.
+		default:
+			keep = append(keep, p)
+		}
+	}
+	r.meta.Update(func(d *meta.Data) error {
+		// Keep entries added while GC ran.
+		if len(d.PendingFree) >= len(pending) {
+			keep = append(keep, d.PendingFree[len(pending):]...)
+		}
+		d.PendingFree = keep
+		return nil
+	})
+	return freed
+}
+
+// Pending is deleted data still on disk.
+type Pending struct {
+	Ref   string    `json:"ref"`
+	Kind  string    `json:"kind"`
+	User  string    `json:"user,omitempty"`
+	Time  time.Time `json:"time"`
+	Bytes int64     `json:"bytes"` // of its blobs still on disk (may be shared)
+}
+
+// Pending lists deleted repositories, tags and images whose data GC has
+// not removed yet, newest first.
+func (r *Runner) Pending() []Pending {
+	var list []meta.PendingFree
+	r.meta.View(func(d *meta.Data) { list = append(list, d.PendingFree...) })
+	out := []Pending{}
+	for i := len(list) - 1; i >= 0; i-- {
+		p := list[i]
+		size, present := r.store.BlobsSize(p.Blobs)
+		if present == 0 {
+			continue
+		}
+		out = append(out, Pending{Ref: p.Ref, Kind: p.Kind, User: p.User, Time: p.Time, Bytes: size})
+	}
+	return out
+}
+
+// Estimate is what GC would free.
+type Estimate struct {
+	Next  int64 `json:"next"`  // at the next regular run
+	Grace int64 `json:"grace"` // additionally, once the grace period ends
+}
+
+// Estimate runs two dry runs (regular and ignoring the grace period).
+func (r *Runner) Estimate() (Estimate, error) {
+	next, err := r.store.CollectGarbage(storage.GCOptions{DryRun: true})
+	if err != nil {
+		return Estimate{}, err
+	}
+	all, err := r.store.CollectGarbage(storage.GCOptions{DryRun: true, IgnoreGrace: true})
+	if err != nil {
+		return Estimate{}, err
+	}
+	grace := all.BytesFreed - next.BytesFreed
+	if grace < 0 {
+		grace = 0
+	}
+	return Estimate{Next: next.BytesFreed, Grace: grace}, nil
+}
+
+// FreeNow runs GC right after a deletion, lifting the grace period only for
+// the data of the pending entries refs.
+func (r *Runner) FreeNow(user string, refs []string) (meta.GCRun, error) {
+	want := map[string]bool{}
+	for _, ref := range refs {
+		want[ref] = true
+	}
+	expire := map[string]storage.ExpireSet{}
+	r.meta.View(func(d *meta.Data) {
+		for _, p := range d.PendingFree {
+			if want[p.Ref] {
+				e := expire[p.Repo]
+				e.Manifests = append(e.Manifests, p.Manifests...)
+				e.Blobs = append(e.Blobs, p.Blobs...)
+				expire[p.Repo] = e
+			}
+		}
+	})
+	return r.Run("manual", user, storage.GCOptions{Expire: expire})
 }

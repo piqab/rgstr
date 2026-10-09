@@ -216,13 +216,25 @@ func (o *Ops) DeleteTag(a Actor, repo, tag string) (err error) {
 	if err != nil {
 		return err
 	}
-	if _, ok := findTag(tags, tag); !ok {
+	t, ok := findTag(tags, tag)
+	if !ok {
 		return ErrNotFound
 	}
 	if o.IsImmutable(repo, tag) {
 		return immutableErr(repo, []string{tag})
 	}
-	return o.store.DeleteManifest(repo, tag)
+	// The image's data becomes garbage only if no other tag keeps it.
+	var mans, blobs []string
+	if len(tagsOf(tags, t.Digest)) == 1 {
+		mans, blobs = o.store.ImageParts(repo, t.Digest)
+	}
+	if err := o.store.DeleteManifest(repo, tag); err != nil {
+		return err
+	}
+	if blobs != nil {
+		o.addPending(a, "tag", repo+":"+tag, repo, mans, blobs)
+	}
+	return nil
 }
 
 // DeleteImage removes the manifest digest and every tag pointing to it.
@@ -257,6 +269,12 @@ func (o *Ops) DeleteImage(a Actor, repo string, digest storage.Digest) (removed 
 	if locked := o.immutableTags(repo, removed); len(locked) > 0 {
 		return nil, immutableErr(repo, locked)
 	}
+	mans, blobs := o.store.ImageParts(repo, digest)
+	defer func() {
+		if err == nil {
+			o.addPending(a, "image", repo+"@"+string(digest), repo, mans, blobs)
+		}
+	}()
 	if err := o.store.DeleteManifest(repo, string(digest)); err != nil {
 		return nil, err
 	}
@@ -284,6 +302,12 @@ func (o *Ops) DeleteRepository(a Actor, repo string) (err error) {
 	if locked := o.immutableTags(repo, names); len(locked) > 0 {
 		return immutableErr(repo, locked)
 	}
+	mans, blobs := o.store.RepoParts(repo)
+	defer func() {
+		if err == nil {
+			o.addPending(a, "repository", repo, repo, mans, blobs)
+		}
+	}()
 	if err := o.store.DeleteRepository(repo); err != nil {
 		if errors.Is(err, storage.ErrRepoNotFound) {
 			return ErrNotFound
@@ -361,4 +385,21 @@ func (o *Ops) ApplyRetention(a Actor, dryRun bool) ([]string, error) {
 // distinct blobs reachable from their tags.
 func (o *Ops) ProjectUsage(project string) int64 {
 	return sumSizes(o.projectBlobs(project))
+}
+
+// addPending remembers deleted data until GC removes it, so the admin can
+// show what is waiting and GC can report what it freed.
+func (o *Ops) addPending(a Actor, kind, ref, repo string, manifests, blobs []string) {
+	if len(blobs) == 0 {
+		return
+	}
+	p := meta.PendingFree{Ref: ref, Kind: kind, Repo: repo, Manifests: manifests, Blobs: blobs,
+		User: a.Name, Time: time.Now().UTC()}
+	o.meta.Update(func(d *meta.Data) error {
+		d.PendingFree = append(d.PendingFree, p)
+		if n := len(d.PendingFree); n > meta.MaxPendingFree {
+			d.PendingFree = d.PendingFree[n-meta.MaxPendingFree:]
+		}
+		return nil
+	})
 }

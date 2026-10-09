@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"rgstr/internal/storage"
 )
 
 func postJSON(t *testing.T, url, body string, headers map[string]string) *http.Response {
@@ -60,8 +62,8 @@ func TestUIDeleteTagsImageRepo(t *testing.T) {
 	}
 
 	// Repository delete.
-	if r := postJSON(t, srv.URL+"/ui/api/repos/delete", `{"repo":"other"}`, nil); r.StatusCode != http.StatusNoContent {
-		t.Errorf("repo delete: got %d want 204", r.StatusCode)
+	if r := postJSON(t, srv.URL+"/ui/api/repos/delete", `{"repo":"other"}`, nil); r.StatusCode != http.StatusOK {
+		t.Errorf("repo delete: got %d want 200", r.StatusCode)
 	}
 	if r := postJSON(t, srv.URL+"/ui/api/repos/delete", `{"repo":"other"}`, nil); r.StatusCode != http.StatusNotFound {
 		t.Errorf("repo delete again: got %d want 404", r.StatusCode)
@@ -633,5 +635,71 @@ func TestUIWebhooks(t *testing.T) {
 	r.Body.Close()
 	if d.Status != 200 || d.Error != "" {
 		t.Errorf("test delivery: %+v", d)
+	}
+}
+
+func TestFreeSpaceAfterDelete(t *testing.T) {
+	srv, store := newTestServer(t)
+	pushImage(t, srv.URL, "app", "1", "amd64")
+	// A fresh upload of someone else's push in progress: no manifest yet.
+	inflight := pushBlob(t, srv.URL, "other", []byte("push in progress"))
+
+	r := postJSON(t, srv.URL+"/ui/api/tags/delete", `{"repo":"app","tags":["1"],"free_space":true}`, nil)
+	var res struct {
+		GC struct {
+			Bytes int64 `json:"bytes_freed"`
+		} `json:"gc"`
+	}
+	json.NewDecoder(r.Body).Decode(&res)
+	r.Body.Close()
+	if res.GC.Bytes == 0 {
+		t.Errorf("free_space freed nothing: %+v", res)
+	}
+	if _, err := store.StatBlob(storage.Digest(inflight)); err != nil {
+		t.Errorf("in-progress upload was removed: %v", err)
+	}
+}
+
+func TestPendingFreeAndGCReport(t *testing.T) {
+	srv, _ := newTestServer(t)
+	pushImage(t, srv.URL, "app", "1", "amd64")
+	postJSON(t, srv.URL+"/ui/api/repos/delete", `{"repo":"app"}`, nil).Body.Close()
+
+	resp := do(t, "GET", srv.URL+"/ui/api/disk?details=1", nil, nil)
+	var disk struct {
+		Supported bool
+		Total     uint64
+		Data      int64 `json:"data_bytes"`
+		Pending   []struct {
+			Ref   string
+			Kind  string
+			Bytes int64
+		}
+		Estimate struct{ Next int64 }
+	}
+	json.NewDecoder(resp.Body).Decode(&disk)
+	resp.Body.Close()
+	if len(disk.Pending) != 1 || disk.Pending[0].Ref != "app" || disk.Pending[0].Kind != "repository" || disk.Pending[0].Bytes == 0 {
+		t.Errorf("pending: %+v", disk.Pending)
+	}
+	if disk.Estimate.Next == 0 || disk.Data == 0 || !disk.Supported || disk.Total == 0 {
+		t.Errorf("disk details: %+v", disk)
+	}
+
+	r := postJSON(t, srv.URL+"/ui/api/gc/run", `{}`, nil)
+	var run struct {
+		Freed []string `json:"freed"`
+	}
+	json.NewDecoder(r.Body).Decode(&run)
+	r.Body.Close()
+	if len(run.Freed) != 1 || run.Freed[0] != "repository app" {
+		t.Errorf("GC freed: %v", run.Freed)
+	}
+	resp = do(t, "GET", srv.URL+"/ui/api/disk?details=1", nil, nil)
+	disk.Pending = nil
+	json.NewDecoder(resp.Body).Decode(&disk)
+	resp.Body.Close()
+	if len(disk.Pending) != 0 {
+		t.Errorf("pending after GC: %+v", disk.Pending)
 	}
 }

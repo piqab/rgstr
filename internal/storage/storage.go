@@ -967,3 +967,96 @@ func (fs *Filesystem) addManifestBlobsLocked(repo string, content []byte, into m
 		}
 	}
 }
+
+// DiskInfo describes the filesystem holding the storage root.
+type DiskInfo struct {
+	Total     uint64 // bytes
+	Free      uint64 // bytes available to the registry process
+	Supported bool   // false where the platform cannot report it
+}
+
+// DataSize returns the bytes of all blobs on disk.
+func (fs *Filesystem) DataSize() int64 {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+	var total int64
+	filepath.WalkDir(filepath.Join(fs.root, "blobs"), func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	return total
+}
+
+// ImageParts lists what an image (manifest digest in repo) consists of:
+// its manifests (the index and its platform manifests) and blobs, as hex.
+func (fs *Filesystem) ImageParts(repo string, digest Digest) (manifests, blobs []string) {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+	seen := map[string]bool{}
+	stack := []string{digest.Hex()}
+	for len(stack) > 0 {
+		h := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		raw, err := os.ReadFile(fs.manifestDigestPath(repo, h))
+		if err != nil {
+			continue
+		}
+		manifests = append(manifests, h)
+		var mf manifestFile
+		if json.Unmarshal(raw, &mf) != nil {
+			continue
+		}
+		var children []string
+		fs.addManifestBlobsHexLocked(repo, mf.Content, &blobs, &children)
+		stack = append(stack, children...)
+	}
+	return manifests, blobs
+}
+
+// RepoParts lists the manifests and linked blobs of a repository, as hex.
+func (fs *Filesystem) RepoParts(repo string) (manifests, blobs []string) {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+	if entries, err := os.ReadDir(filepath.Join(fs.repoBase(repo), "manifests", "by-digest")); err == nil {
+		for _, e := range entries {
+			manifests = append(manifests, e.Name())
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(fs.repoBase(repo), "layers")); err == nil {
+		for _, e := range entries {
+			blobs = append(blobs, e.Name())
+		}
+	}
+	return manifests, blobs
+}
+
+// BlobsSize returns the bytes of the listed blobs (hex) still on disk.
+func (fs *Filesystem) BlobsSize(blobs []string) (size int64, present int) {
+	fs.gcMu.RLock()
+	defer fs.gcMu.RUnlock()
+	for _, h := range blobs {
+		if info, err := fs.statBlobLocked(DigestFromHex(h)); err == nil {
+			size += info.Size
+			present++
+		}
+	}
+	return size, present
+}
+
+func (fs *Filesystem) addManifestBlobsHexLocked(repo string, content []byte, blobs, children *[]string) {
+	for _, d := range extractDigests(content) {
+		if _, err := os.Stat(fs.manifestDigestPath(repo, d.Hex())); err == nil {
+			*children = append(*children, d.Hex())
+		} else {
+			*blobs = append(*blobs, d.Hex())
+		}
+	}
+}

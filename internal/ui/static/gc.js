@@ -19,6 +19,8 @@
       <h2 class="page">${esc(t('nav.gc'))}</h2>
       <p class="muted small" style="margin:-8px 0 16px">${esc(t('gc.intro', {grace: humanDur(st.grace_period)}))}</p>
 
+      <div class="card" id="gc-disk"><div class="loading">${esc(t('common.loading'))}</div></div>
+
       <div class="card">
         <h3 style="margin-top:0">${esc(t('gc.schedule'))}</h3>
         <p style="margin-bottom:12px">${off ? esc(t('gc.off')) : esc(t('gc.every', {interval: humanDur(st.interval)}))}
@@ -63,6 +65,41 @@
     if (reset) reset.addEventListener('click', () => saveInterval(''));
     el.querySelector('#gc-run').addEventListener('click', e => run(e.target, el));
     el.querySelectorAll('[data-run]').forEach(tr => tr.addEventListener('click', () => showRun(history[+tr.dataset.run])));
+    loadDisk(el.querySelector('#gc-disk'), st.grace_period);
+  }
+
+  // Disk: free space, registry data, what GC frees now / after the grace
+  // period, and deleted data waiting for GC.
+  async function loadDisk(card, grace) {
+    const res = await App.api('/ui/api/disk?details=1');
+    if (!card.isConnected) return;
+    if (!res.ok) { card.innerHTML = `<div class="err" style="display:block">${esc(res.data.error || '')}</div>`; return; }
+    const d = res.data;
+    const used = d.total - d.free;
+    const pct = d.total ? Math.round(used / d.total * 100) : 0;
+    const est = d.estimate || {next: 0, grace: 0};
+    const pending = d.pending || [];
+    card.innerHTML = `
+      <h3 style="margin-top:0">${esc(t('disk.title'))}</h3>
+      ${d.supported ? `
+        <div class="small">${esc(t('disk.summary', {free: fmtBytes(d.free), total: fmtBytes(d.total), pct}))}</div>
+        <div class="bar ${d.low ? 'bar-err' : pct >= 80 ? 'bar-warn' : ''}" style="max-width:none;margin:6px 0 12px"><div style="width:${pct}%"></div></div>` : ''}
+      <table class="kv">
+        <tr><th>${esc(t('disk.registry'))}</th><td>${esc(fmtBytes(d.data_bytes))}</td></tr>
+        <tr><th>${esc(t('disk.next'))}</th><td><b>${esc(fmtBytes(est.next))}</b></td></tr>
+        <tr><th>${esc(t('disk.afterGrace', {grace: humanDur(grace)}))}</th><td>${esc(fmtBytes(est.grace))}
+          ${est.grace ? `<span class="muted small"> — ${esc(t('disk.afterGraceHint'))}</span>` : ''}</td></tr>
+      </table>
+      ${pending.length ? `
+        <h3>${esc(t('disk.pending'))}</h3>
+        <div class="tbl-wrap"><table class="tbl">
+          <tr><th>${esc(t('disk.what'))}</th><th>${esc(t('disk.deleted'))}</th><th>${esc(t('img.size'))}</th></tr>
+          ${pending.map(p => `<tr>
+            <td><span class="badge">${esc(t('disk.kind.' + p.kind))}</span> <span class="mono small">${esc(p.ref)}</span></td>
+            <td class="small">${esc(fmtTime(p.time))}${p.user ? ' · ' + esc(p.user) : ''}</td>
+            <td>${esc(fmtBytes(p.bytes))}</td></tr>`).join('')}
+        </table></div>
+        <p class="muted small" style="margin-top:6px">${esc(t('disk.pendingHint'))}</p>` : ''}`;
   }
 
   function historyTable() {
@@ -103,10 +140,14 @@
   }
 
   function showRun(r) {
-    const list = r.manifests && r.manifests.length
-      ? `<div class="tbl-wrap" style="max-height:300px;overflow:auto"><table class="tbl">${r.manifests.map(m => `<tr><td class="mono small">${esc(m)}</td></tr>`).join('')}</table></div>
-         ${r.manifests_removed > r.manifests.length ? `<p class="muted small">${esc(t('gc.more', {n: r.manifests_removed - r.manifests.length}))}</p>` : ''}`
-      : `<p class="muted">${esc(t('gc.noManifests'))}</p>`;
+    const freed = r.freed && r.freed.length ? `
+      <h3>${esc(t('gc.freedFrom'))}</h3>
+      ${r.freed.map(f => { const i = f.indexOf(' '); return `<div><span class="badge">${esc(t('disk.kind.' + f.slice(0, i)))}</span> <span class="mono small">${esc(f.slice(i + 1))}</span></div>`; }).join('')}` : '';
+    const list = r.manifests && r.manifests.length ? `
+      <h3>${esc(t('gc.manifestsList'))}</h3>
+      <div class="tbl-wrap" style="max-height:300px;overflow:auto"><table class="tbl">${r.manifests.map(m => `<tr><td class="mono small">${esc(m)}</td></tr>`).join('')}</table></div>
+      ${r.manifests_removed > r.manifests.length ? `<p class="muted small">${esc(t('gc.more', {n: r.manifests_removed - r.manifests.length}))}</p>` : ''}` : '';
+    const nothing = !freed && !list && !r.bytes_freed ? `<p class="muted">${esc(r.dry_run ? t('gc.nothingDry') : t('gc.nothing'))}</p>` : '';
     const m = App.openModal(`
       <h2>${esc(r.dry_run ? t('gc.resultDry') : t('gc.result'))}</h2>
       ${r.error ? `<p class="err" style="display:block">${esc(r.error)}</p>` : ''}
@@ -116,8 +157,7 @@
         <div class="stat-card"><div class="val">${r.manifests_removed}</div><div class="lbl">${esc(t('gc.colManifests'))}</div></div>
         <div class="stat-card"><div class="val">${r.uploads_removed}</div><div class="lbl">${esc(t('gc.colUploads'))}</div></div>
       </div>
-      <h3>${esc(t('gc.manifestsList'))}</h3>
-      ${list}
+      ${freed}${list}${nothing}
       <div class="dialog-actions"><button class="btn" id="m-close">${esc(t('common.close'))}</button></div>`);
     m.querySelector('#m-close').addEventListener('click', App.closeModal);
   }
@@ -179,8 +219,22 @@ App.addLang('en', {
   'gc.resultDry': 'Dry run result',
   'gc.freed': 'freed',
   'gc.wouldFree': 'would be freed',
-  'gc.manifestsList': 'Images removed',
-  'gc.noManifests': 'No images removed.',
+  'gc.manifestsList': 'Untagged images removed by GC',
+  'gc.freedFrom': 'Space freed from deleted',
+  'gc.nothing': 'Nothing to remove.',
+  'gc.nothingDry': 'Nothing would be removed now.',
+  'disk.title': 'Disk',
+  'disk.summary': '{free} free of {total} ({pct}% used)',
+  'disk.next': 'Next GC frees',
+  'disk.afterGrace': 'After the grace period ({grace}) also',
+  'disk.afterGraceHint': 'recently pushed data, freed earlier only by a run ignoring the grace period',
+  'disk.pending': 'Deleted, waiting for GC',
+  'disk.what': 'What',
+  'disk.deleted': 'Deleted',
+  'disk.pendingHint': 'Sizes include layers shared with other images; those stay on disk.',
+  'disk.kind.repository': 'repository',
+  'disk.kind.tag': 'tag',
+  'disk.kind.image': 'image',
   'gc.more': 'and {n} more',
   'dur.d': '{n}d',
   'dur.h': '{n}h',

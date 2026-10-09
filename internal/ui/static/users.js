@@ -158,7 +158,7 @@
       </div>`);
     m.querySelector('#m-close').addEventListener('click', App.closeModal);
     m.querySelector('#m-copy').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(password); toast(t('users.copied')); } catch (e) { toast(t('users.copyFailed')); }
+      App.copyText(password);
     });
   }
 

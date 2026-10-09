@@ -16,6 +16,25 @@ type GCOptions struct {
 	// IgnoreGrace also removes recent unreferenced uploads and manifests.
 	// This frees space immediately but can break a push in progress.
 	IgnoreGrace bool
+	// Expire lifts the grace period only for these just-deleted manifests
+	// and blobs (hex), per repository, so their space is freed now while
+	// other recent uploads stay protected.
+	Expire map[string]ExpireSet
+}
+
+// ExpireSet lists manifests and blobs (hex) of one repository.
+type ExpireSet struct {
+	Manifests []string
+	Blobs     []string
+}
+
+func (e ExpireSet) has(list []string, h string) bool {
+	for _, x := range list {
+		if x == h {
+			return true
+		}
+	}
+	return false
 }
 
 // GCResult reports what a run removed (or, for a dry run, would remove).
@@ -59,9 +78,15 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 	var res GCResult
 	log.Printf("gc: starting (dry run: %v, ignore grace: %v)", opts.DryRun, opts.IgnoreGrace)
 
-	// ── Phase 0: Acquire write lock ───────────────────────────────────────
-	fs.gcMu.Lock()
-	defer fs.gcMu.Unlock()
+	// ── Phase 0: Lock ─────────────────────────────────────────────────────
+	// A dry run changes nothing, so it only needs to keep GC runs out.
+	if opts.DryRun {
+		fs.gcMu.RLock()
+		defer fs.gcMu.RUnlock()
+	} else {
+		fs.gcMu.Lock()
+		defer fs.gcMu.Unlock()
+	}
 
 	// ── Phase 1: Mark ─────────────────────────────────────────────────────
 	referenced := make(map[string]bool) // blob hex hash → in use
@@ -90,6 +115,10 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 	// Layout: <repo>/manifests/by-digest/<hex>, <repo>/manifests/tags/<tag>,
 	// <repo>/layers/<hex>.
 	reposDir := filepath.Join(fs.root, "repositories")
+	expired := func(repoDir string) ExpireSet {
+		name, _ := filepath.Rel(reposDir, repoDir)
+		return opts.Expire[filepath.ToSlash(name)]
+	}
 	if err := filepath.WalkDir(reposDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
 			return nil
@@ -101,7 +130,9 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 			st := repo(filepath.Dir(parent))
 			st.manifests[d.Name()] = path
 			if recent(d) {
-				st.roots = append(st.roots, d.Name())
+				if exp := expired(filepath.Dir(parent)); !exp.has(exp.Manifests, d.Name()) {
+					st.roots = append(st.roots, d.Name())
+				}
 			}
 
 		case filepath.Base(dir) == "tags" && filepath.Base(parent) == "manifests":
@@ -115,7 +146,9 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 			}
 
 		case filepath.Base(dir) == "layers" && recent(d):
-			referenced[d.Name()] = true
+			if exp := expired(parent); !exp.has(exp.Blobs, d.Name()) {
+				referenced[d.Name()] = true
+			}
 		}
 		return nil
 	}); err != nil {

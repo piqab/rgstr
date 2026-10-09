@@ -27,6 +27,7 @@
       <div class="stats-bar">
         <div class="stat-card"><div class="val">${allRepos.length}</div><div class="lbl">${esc(t('repos.count'))}</div></div>
         <div class="stat-card"><div class="val">${totalPulls}</div><div class="lbl">${esc(t('repos.pulls'))}</div></div>
+        ${App.session.admin ? '<div class="stat-card" id="disk-card" style="flex:2"></div>' : ''}
       </div>
       <div class="toolbar"><input type="search" class="search" id="repo-filter" placeholder="${esc(t('repos.filter'))}"></div>
       <div class="repo-grid" id="repo-grid"></div>`;
@@ -36,6 +37,37 @@
     el.querySelector('#repo-grid').addEventListener('click', onClick);
     el.querySelector('#repo-grid').addEventListener('change', onChange);
     renderGrid();
+    if (App.session.admin) loadDisk(el.querySelector('#disk-card'));
+  }
+
+  // Disk card: free space of the storage volume and the registry's share.
+  async function loadDisk(card) {
+    const res = await App.api('/ui/api/disk?data=1');
+    if (!res.ok || !card.isConnected) return;
+    const d = res.data;
+    if (!d.supported) {
+      card.innerHTML = `<div class="val">${esc(fmtBytes(d.data_bytes))}</div><div class="lbl">${esc(t('disk.registry'))}</div>`;
+      return;
+    }
+    const used = d.total - d.free;
+    const pct = d.total ? Math.round(used / d.total * 100) : 0;
+    card.innerHTML = `
+      <div class="val">${esc(fmtBytes(d.free))}</div>
+      <div class="lbl">${esc(t('disk.freeOf', {total: fmtBytes(d.total)}))} · ${esc(t('disk.registryUses', {size: fmtBytes(d.data_bytes)}))}</div>
+      <div class="bar ${d.low ? 'bar-err' : pct >= 80 ? 'bar-warn' : ''}"><div style="width:${pct}%"></div></div>`;
+  }
+
+  // The "free space now" option of delete dialogs (administrators only).
+  function freeOption() {
+    return App.session.admin
+      ? {check: t('repos.freeNow'), checkDefault: true, checkHint: t('repos.freeNowHint')}
+      : {};
+  }
+
+  function deletedToast(base, gc) {
+    if (gc && gc.error) toast(base + ' ' + t('repos.gcFailed', {error: gc.error}));
+    else if (gc) toast(base + ' ' + t('repos.freed', {size: fmtBytes(gc.bytes_freed)}));
+    else toast(base + (App.session.admin ? '' : ' ' + t('repos.freedLater')));
   }
 
   async function reload() {
@@ -62,7 +94,8 @@
     return `
     <div class="repo-card${openRepos.has(r.name) ? ' open' : ''}" data-repo="${esc(r.name)}">
       <div class="repo-header" data-act="toggle">
-        <span class="repo-name">${esc(r.name)}</span>
+        <span class="repo-name" title="${esc(t('repos.selectHint'))}">${esc(r.name)}</span>
+        <button class="btn btn-sm" data-act="copy" title="${esc(t('repos.copyHint', {path: App.registryHost() + '/' + r.name}))}">⧉ ${esc(t('common.copy'))}</button>
         <span class="repo-meta">${esc(t('repos.meta', {tags: n, pulls: r.pulls}))}</span>
         ${r.can_delete ? `<button class="btn btn-sm btn-danger" data-act="delete-repo">${esc(t('repos.deleteRepo'))}</button>` : ''}
         <span class="repo-arrow">▶</span>
@@ -114,7 +147,12 @@
     if (!btn || btn.tagName === 'INPUT') return;
     const act = btn.dataset.act;
     if (act === 'toggle') {
+      // The name is text to select and copy; it does not fold the card.
+      if (e.target.closest('.repo-name') || String(window.getSelection()).trim()) return;
       if (card.classList.toggle('open')) openRepos.add(repo.name); else openRepos.delete(repo.name);
+    } else if (act === 'copy') {
+      e.stopPropagation();
+      App.copyText(App.registryHost() + '/' + repo.name);
     } else if (act === 'delete-repo') {
       e.stopPropagation();
       deleteRepo(repo);
@@ -150,40 +188,49 @@
     // Images that lose their last tag here will be removed by GC.
     const remaining = new Set(repo.tags.filter(x => !tags.includes(x.name)).map(x => x.digest));
     const orphaned = new Set(repo.tags.filter(x => tags.includes(x.name) && !remaining.has(x.digest)).map(x => x.digest));
-    const msg = (tags.length === 1
-      ? t('repos.confirmTag', {ref: repo.name + ':' + tags[0]})
-      : t('repos.confirmTags', {n: tags.length, repo: repo.name})) +
-      '\n' + (orphaned.size ? t('repos.noteOrphaned', {n: orphaned.size}) : t('repos.noteKept'));
-    if (!confirm(msg)) return;
+    const c = await App.confirmDialog(Object.assign({
+      title: tags.length === 1
+        ? t('repos.confirmTag', {ref: repo.name + ':' + tags[0]})
+        : t('repos.confirmTags', {n: tags.length, repo: repo.name}),
+      message: orphaned.size ? t('repos.noteOrphaned', {n: orphaned.size}) : t('repos.noteKept'),
+    }, orphaned.size ? freeOption() : {}));
+    if (!c.ok) return;
 
-    const res = await post('/ui/api/tags/delete', {repo: repo.name, tags});
+    const res = await post('/ui/api/tags/delete', {repo: repo.name, tags, free_space: c.checked});
     if (!res.ok) { toast(res.data.error || t('common.failed', {status: res.status})); return; }
     const failed = res.data.results.filter(x => x.error);
     if (failed.length) {
       toast(t('repos.someFailed', {n: failed.length}) + ' ' + failed.map(x => `:${x.tag} (${x.error})`).join(', '));
     } else {
-      toast(t('repos.deletedTags', {n: tags.length}));
+      deletedToast(t('repos.deletedTags', {n: tags.length}), res.data.gc);
     }
     await reload();
   }
 
   async function deleteImage(repo, tg) {
     const tags = repo.tags.filter(x => x.digest === tg.digest).map(x => ':' + x.name);
-    if (!confirm(t('repos.confirmImage', {digest: tg.digest.slice(0, 19) + '…', tags: tags.join(', ')}))) return;
-    const res = await post('/ui/api/images/delete', {repo: repo.name, digest: tg.digest});
+    const c = await App.confirmDialog(Object.assign({
+      title: t('repos.confirmImageTitle', {digest: tg.digest.slice(0, 19) + '…'}),
+      message: t('repos.confirmImage', {tags: tags.join(', ')}),
+    }, freeOption()));
+    if (!c.ok) return;
+    const res = await post('/ui/api/images/delete', {repo: repo.name, digest: tg.digest, free_space: c.checked});
     if (!res.ok) { toast(res.data.error || t('common.failed', {status: res.status})); return; }
-    toast(t('repos.deletedImage', {tags: tags.join(', ')}));
+    deletedToast(t('repos.deletedImage', {tags: tags.join(', ')}), res.data.gc);
     await reload();
   }
 
   async function deleteRepo(repo) {
-    const typed = prompt(t('repos.confirmRepo', {repo: repo.name, n: repo.tags.length}));
-    if (typed === null) return;
-    if (typed !== repo.name) { toast(t('repos.nameMismatch')); return; }
-    const res = await post('/ui/api/repos/delete', {repo: repo.name});
+    const c = await App.confirmDialog(Object.assign({
+      title: t('repos.confirmRepoTitle', {repo: repo.name}),
+      message: t('repos.confirmRepo', {n: repo.tags.length}),
+      typeToConfirm: repo.name,
+    }, freeOption()));
+    if (!c.ok) return;
+    const res = await post('/ui/api/repos/delete', {repo: repo.name, free_space: c.checked});
     if (!res.ok) { toast(res.data.error || t('common.failed', {status: res.status})); return; }
     openRepos.delete(repo.name);
-    toast(t('repos.deletedRepo', {repo: repo.name}));
+    deletedToast(t('repos.deletedRepo', {repo: repo.name}), res.data.gc);
     await reload();
   }
 })();
@@ -207,14 +254,25 @@ App.addLang('en', {
   'repos.confirmTags': 'Delete {n} tags in {repo}?',
   'repos.noteOrphaned': '{n} image(s) will have no tags left; GC will remove their data.',
   'repos.noteKept': 'The images stay available under their other tags.',
-  'repos.confirmImage': 'Delete image {digest}?\nThese tags will be removed: {tags}',
-  'repos.confirmRepo': 'Delete repository {repo} with all {n} tags?\nType the repository name to confirm:',
-  'repos.nameMismatch': 'Name does not match, nothing deleted',
+  'repos.confirmImageTitle': 'Delete image {digest}?',
+  'repos.confirmImage': 'These tags will be removed: {tags}',
+  'repos.confirmRepoTitle': 'Delete repository {repo}?',
+  'repos.confirmRepo': 'All {n} tags will be deleted.\nType the repository name to confirm:',
+  'repos.freeNow': 'Free the disk space now',
+  'repos.freeNowHint': 'Runs garbage collection for the deleted data right away. Otherwise the space is freed by the next GC (data pushed within the grace period waits until it ends).',
+  'repos.freed': '{size} freed.',
+  'repos.freedLater': 'The disk space is freed by the next garbage collection.',
+  'repos.gcFailed': 'Space not freed yet: {error}',
+  'disk.freeOf': 'free of {total}',
+  'disk.registryUses': 'registry data {size}',
+  'disk.registry': 'registry data',
   'repos.someFailed': '{n} tag(s) not deleted:',
   'repos.deletedTags': 'Deleted {n} tag(s)',
   'repos.deletedImage': 'Deleted image ({tags})',
   'repos.deletedRepo': 'Deleted repository {repo}',
   'repos.immutable': 'immutable',
+  'repos.copyHint': 'Copy {path}',
+  'repos.selectHint': 'The name can be selected and copied',
   'repos.openImage': 'Open image details',
   'repos.immutableHint': 'Protected by an immutability policy: cannot be overwritten or deleted',
 });

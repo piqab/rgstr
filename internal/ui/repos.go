@@ -130,8 +130,9 @@ func (h *Handler) handleDeleteTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Repo string   `json:"repo"`
-		Tags []string `json:"tags"`
+		Repo      string   `json:"repo"`
+		Tags      []string `json:"tags"`
+		FreeSpace bool     `json:"free_space"` // run GC for the deleted data (admins)
 	}
 	if !decode(w, r, &req) {
 		return
@@ -141,14 +142,19 @@ func (h *Handler) handleDeleteTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := []tagResult{}
+	var refs []string
 	for _, tag := range req.Tags {
 		res := tagResult{Tag: tag}
 		if err := h.ops.DeleteTag(actor, req.Repo, tag); err != nil {
 			res.Error = err.Error()
+		} else {
+			refs = append(refs, req.Repo+":"+tag)
 		}
 		results = append(results, res)
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"results": results})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results": results, "gc": h.freeNow(actor.Name, req.FreeSpace, refs),
+	})
 }
 
 // handleDeleteImage deletes a manifest by digest with all its tags.
@@ -157,8 +163,9 @@ func (h *Handler) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Repo   string `json:"repo"`
-		Digest string `json:"digest"`
+		Repo      string `json:"repo"`
+		Digest    string `json:"digest"`
+		FreeSpace bool   `json:"free_space"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -175,7 +182,10 @@ func (h *Handler) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 	if removed == nil {
 		removed = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"removed_tags": removed})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"removed_tags": removed,
+		"gc":           h.freeNow(actor.Name, req.FreeSpace, []string{req.Repo + "@" + req.Digest}),
+	})
 }
 
 // handleDeleteRepo deletes a whole repository.
@@ -184,7 +194,8 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Repo string `json:"repo"`
+		Repo      string `json:"repo"`
+		FreeSpace bool   `json:"free_space"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -197,7 +208,7 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		opError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"gc": h.freeNow(actor.Name, req.FreeSpace, []string{req.Repo})})
 }
 
 // ─── Manifest inspection ──────────────────────────────────────────────────────

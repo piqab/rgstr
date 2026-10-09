@@ -162,6 +162,7 @@ const App = (() => {
     $('btn-logout').style.display = 'none';
     $('hdr-user').textContent = '';
     $('nav').innerHTML = '';
+    $('disk-banner').innerHTML = '';
     closeModal();
     $('login-overlay').classList.add('show');
     showLoginError(msg);
@@ -249,6 +250,7 @@ const App = (() => {
     const r = currentRoute();
     const p = visiblePages().find(x => x.id === r.id) || visiblePages()[0];
     renderNav();
+    refreshDiskBanner();
     if (p.hidden && p.parent) {
       const a = document.querySelector(`#nav a[href="#${p.parent}"]`);
       if (a) a.classList.add('active');
@@ -275,6 +277,51 @@ const App = (() => {
   }
 
   function closeModal() { $('modal-overlay').classList.remove('show'); $('modal').innerHTML = ''; }
+
+  // confirmDialog asks to confirm a dangerous action. Options:
+  //   title, message (multi-line), danger: button label,
+  //   check: label of an optional checkbox (checkDefault), typeToConfirm:
+  //   text the user must type to enable the button.
+  // Resolves to {ok, checked}.
+  function confirmDialog(o) {
+    return new Promise(resolve => {
+      const m = openModal(`
+        <h2>${esc(o.title)}</h2>
+        ${(o.message || '').split('\n').filter(Boolean).map(l => `<p class="note" style="margin:0 0 10px">${esc(l)}</p>`).join('')}
+        ${o.typeToConfirm ? `<input id="cd-type" autocomplete="off" placeholder="${esc(o.typeToConfirm)}" style="margin-top:6px">` : ''}
+        ${o.check ? `<label class="check" style="margin-top:6px"><input type="checkbox" id="cd-check" ${o.checkDefault ? 'checked' : ''}>${esc(o.check)}</label>
+          ${o.checkHint ? `<p class="muted small" style="margin:-8px 0 12px">${esc(o.checkHint)}</p>` : ''}` : ''}
+        <div class="dialog-actions">
+          <button class="btn" id="cd-cancel">${esc(t('common.cancel'))}</button>
+          <button class="btn btn-danger-solid" id="cd-ok" ${o.typeToConfirm ? 'disabled' : ''}>${esc(o.danger || t('common.delete'))}</button>
+        </div>`);
+      const done = ok => {
+        const c = m.querySelector('#cd-check');
+        closeModal();
+        resolve({ok, checked: !!(c && c.checked)});
+      };
+      m.querySelector('#cd-cancel').addEventListener('click', () => done(false));
+      m.querySelector('#cd-ok').addEventListener('click', () => done(true));
+      const typed = m.querySelector('#cd-type');
+      if (typed) {
+        typed.addEventListener('input', () => { m.querySelector('#cd-ok').disabled = typed.value !== o.typeToConfirm; });
+        typed.focus();
+      } else {
+        m.querySelector('#cd-ok').focus();
+      }
+    });
+  }
+
+  // Low-disk warning for administrators, refreshed on every page change.
+  async function refreshDiskBanner() {
+    const el = $('disk-banner');
+    if (!session.ready || !session.admin) { el.innerHTML = ''; return; }
+    const res = await api('/ui/api/disk');
+    if (!res.ok || !res.data.low) { el.innerHTML = ''; return; }
+    const d = res.data;
+    el.innerHTML = `<div class="banner">${esc(t('disk.lowBanner', {free: fmtBytes(d.free), total: fmtBytes(d.total)}))}
+      <a href="#gc">${esc(t('disk.lowAction'))}</a></div>`;
+  }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -315,12 +362,36 @@ const App = (() => {
     toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
   }
 
+  // copyText copies to the clipboard. navigator.clipboard only works on
+  // HTTPS or localhost, so plain-HTTP registries fall back to execCommand.
+  async function copyText(text) {
+    let ok = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch (e) { /* fall back */ }
+    if (!ok) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove();
+    }
+    toast(ok ? t('common.copied', {text: text.length > 60 ? text.slice(0, 57) + '…' : text}) : t('common.copyFailed'));
+    return ok;
+  }
+
   // Registry host as clients address it, for docker commands.
   function registryHost() { return location.host; }
 
   return {
     boot, api, post, page, route, t, addLang, setLang, lang: () => lang, langs: () => Object.keys(langs),
-    session, openModal, closeModal, esc, fmtBytes, fmtTime, fmtAgo, toast, registryHost, $,
+    session, openModal, closeModal, confirmDialog, copyText, esc, fmtBytes, fmtTime, fmtAgo, toast, registryHost, $,
   };
 })();
 
@@ -351,8 +422,13 @@ App.addLang('en', {
   'common.loading': 'Loading…',
   'common.failed': 'Failed: {status}',
   'common.close': 'Close',
+  'common.copied': 'Copied: {text}',
+  'common.copyFailed': 'Copy failed — select the text and copy it manually',
+  'common.copy': 'Copy',
   'time.now': 'just now',
   'time.min': '{n} min ago',
   'time.hour': '{n} h ago',
   'time.day': '{n} d ago',
+  'disk.lowBanner': 'Low disk space: {free} free of {total}.',
+  'disk.lowAction': 'Free space →',
 });

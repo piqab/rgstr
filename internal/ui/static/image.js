@@ -139,7 +139,7 @@
   }
 
   async function copy(text) {
-    try { await navigator.clipboard.writeText(text); toast(t('img.copied')); } catch (e) { toast(t('users.copyFailed')); }
+    App.copyText(text);
   }
 })();
 

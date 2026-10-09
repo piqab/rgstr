@@ -23,7 +23,22 @@ type Data struct {
 	Projects         map[string]Project `json:"projects,omitempty"`
 	Robots           map[string]Robot   `json:"robots,omitempty"`
 	Webhooks         []Webhook          `json:"webhooks,omitempty"`
+	PendingFree      []PendingFree      `json:"pending_free,omitempty"`
 }
+
+// PendingFree is something deleted whose data GC has not removed yet.
+type PendingFree struct {
+	Ref       string    `json:"ref"`  // team/app, team/app:1, team/app@sha256:…
+	Kind      string    `json:"kind"` // "repository", "tag" or "image"
+	Repo      string    `json:"repo"`
+	Manifests []string  `json:"manifests,omitempty"` // hex, for an immediate GC
+	Blobs     []string  `json:"blobs"`               // hex
+	User      string    `json:"user,omitempty"`
+	Time      time.Time `json:"time"`
+}
+
+// MaxPendingFree caps the pending list; the oldest entries are dropped.
+const MaxPendingFree = 500
 
 // Webhook events.
 const (
@@ -191,6 +206,7 @@ type GCRun struct {
 	ManifestsRemoved int       `json:"manifests_removed"`
 	UploadsRemoved   int       `json:"uploads_removed"`
 	Manifests        []string  `json:"manifests,omitempty"` // repo@digest, capped
+	Freed            []string  `json:"freed,omitempty"`     // deleted repos/tags/images whose data this run removed
 	Error            string    `json:"error,omitempty"`
 }
 

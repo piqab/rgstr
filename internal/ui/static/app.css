@@ -78,7 +78,7 @@ input.search{width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:6px
 .repo-card{background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
 .repo-header{padding:14px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
 .repo-header:hover{background:#fafafa}
-.repo-name{font-weight:600;font-size:.95rem;flex:1;word-break:break-all}
+.repo-name{font-weight:600;font-size:.95rem;flex:1;word-break:break-all;user-select:text;cursor:text}
 .repo-meta{font-size:.82rem;color:#888;white-space:nowrap}
 .repo-arrow{transition:transform .2s;font-size:.8rem;color:#aaa}
 .repo-card.open .repo-arrow{transform:rotate(90deg)}
@@ -129,3 +129,8 @@ a.badge:hover{background:#e4e4ee}
 .bar>div{height:100%;background:#4caf50}
 .bar.bar-warn>div{background:#f0a020}
 .bar.bar-err>div{background:#d33}
+
+/* ── Disk ──────────────────────────────────────────────────────────────── */
+.banner{background:#fde8e8;color:#8a1010;padding:10px 24px;font-size:.9rem;display:flex;gap:12px;justify-content:center}
+.banner a{color:#8a1010;font-weight:600}
+.stat-card .bar{max-width:none;margin-top:8px}
