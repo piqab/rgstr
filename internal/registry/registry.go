@@ -115,7 +115,7 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": reg.cfg.Version})
 	})
 
 	mux.HandleFunc("/stats", reg.handleStats)

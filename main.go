@@ -21,6 +21,7 @@ var version = "dev"
 
 func main() {
 	cfg := config.Load()
+	cfg.Version = displayVersion(version)
 
 	store, err := storage.NewFilesystem(cfg.StorageRoot, cfg)
 	if err != nil {
@@ -47,7 +48,7 @@ func main() {
 	reg.Start(gcCtx)
 
 	log.Printf("rgstr %s listening on %s  storage=%s  auth=%v",
-		version, cfg.ListenAddr, cfg.StorageRoot, cfg.AuthEnabled)
+		cfg.Version, cfg.ListenAddr, cfg.StorageRoot, cfg.AuthEnabled)
 
 	go func() {
 		var serveErr error
@@ -71,4 +72,12 @@ func main() {
 		log.Printf("shutdown: %v", err)
 	}
 	log.Println("stopped")
+}
+
+// displayVersion adds the "v" prefix to numeric versions ("1.5.0" → "v1.5.0").
+func displayVersion(v string) string {
+	if v != "" && v[0] >= '0' && v[0] <= '9' {
+		return "v" + v
+	}
+	return v
 }

@@ -2,7 +2,8 @@
 /* Horizontal swipes (touchpad, touchscreen) must not trigger the browser's
    back/forward navigation, which would jump between admin pages. */
 html,body{overscroll-behavior-x:none}
-body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222;font-size:15px}
+body{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222;font-size:15px;
+  min-height:100vh;display:flex;flex-direction:column}
 a{color:#1a1a2e}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 
@@ -19,7 +20,7 @@ nav a.active{color:#fff;border-bottom-color:#7c83fd}
 .hdr-btn{display:none;background:rgba(255,255,255,.15);border:none;color:#fff;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:.82rem}
 .hdr-btn:hover{background:rgba(255,255,255,.25)}
 
-main{max-width:1150px;margin:0 auto;padding:24px;display:none}
+main{max-width:1150px;width:100%;margin:0 auto;padding:24px;display:none;flex:1 0 auto}
 h2.page{font-size:1.2rem;margin-bottom:16px}
 h3{font-size:1rem;margin:20px 0 10px}
 .muted{color:#888}
@@ -141,3 +142,7 @@ a.badge:hover{background:#e4e4ee}
 /* Scrollable blocks keep their scrolling to themselves: reaching the edge
    must not scroll the page or turn into a back/forward swipe. */
 pre,.dialog{overscroll-behavior:contain}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+footer{text-align:center;color:#aaa;font-size:.78rem;padding:8px 16px 24px;display:none}
+.login-version{text-align:center;color:#bbb;font-size:.75rem;margin-top:8px}

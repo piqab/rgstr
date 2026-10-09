@@ -14,8 +14,10 @@ COPY . .
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /rgstr . && \
+# Without --build-arg VERSION (local builds) take it from the VERSION file.
+RUN V="$VERSION"; if [ "$V" = dev ] && [ -f VERSION ]; then V="v$(cat VERSION)"; fi; \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w -X main.version=$V" -o /rgstr . && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /mkpasswd ./cmd/mkpasswd
 

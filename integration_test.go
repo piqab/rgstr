@@ -37,6 +37,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *storage.Filesystem) {
 		UploadTTL:   24 * time.Hour,
 		Users:       map[string]string{},
 		StorageRoot: t.TempDir(),
+		Version:     "v0.0.0-test",
 	}
 	store, err := storage.NewFilesystem(cfg.StorageRoot, cfg)
 	if err != nil {
@@ -122,8 +123,8 @@ func TestIntegrationBlobPushPull(t *testing.T) {
 
 	// PATCH — send the full blob as one chunk
 	resp = do(t, "PATCH", loc, data, map[string]string{
-		"Content-Type":   "application/octet-stream",
-		"Content-Range":  fmt.Sprintf("0-%d", len(data)-1),
+		"Content-Type":  "application/octet-stream",
+		"Content-Range": fmt.Sprintf("0-%d", len(data)-1),
 	})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {

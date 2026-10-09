@@ -9,6 +9,9 @@ import (
 
 // Config holds all runtime configuration.
 type Config struct {
+	// Version of the running build (set by main, not from env).
+	Version string
+
 	ListenAddr  string
 	StorageRoot string
 	TLSCert     string

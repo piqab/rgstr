@@ -98,6 +98,11 @@ const App = (() => {
 
     const me = await api('/ui/api/me');
     session.authEnabled = me.data.auth_enabled;
+    session.version = me.data.version || '';
+    if (session.version) {
+      $('footer').textContent = 'rgstr ' + session.version;
+      $('login-version').textContent = 'rgstr ' + session.version;
+    }
     if (!session.authEnabled) {
       session.admin = true;
       $('hdr-user').textContent = t('hdr.noauth');
@@ -146,6 +151,7 @@ const App = (() => {
   function showApp() {
     session.ready = true;
     $('app').style.display = 'block';
+    $('footer').style.display = 'block';
     renderNav();
     route();
   }
@@ -158,6 +164,7 @@ const App = (() => {
     session.ready = false;
     sessionStorage.removeItem('rgstr_token');
     $('app').style.display = 'none';
+    $('footer').style.display = 'none';
     $('btn-password').style.display = 'none';
     $('btn-logout').style.display = 'none';
     $('hdr-user').textContent = '';

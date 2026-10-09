@@ -9,6 +9,7 @@ import (
 )
 
 type meResponse struct {
+	Version      string `json:"version"`
 	AuthEnabled  bool   `json:"auth_enabled"`
 	User         string `json:"user,omitempty"`
 	Admin        bool   `json:"admin"`
@@ -21,7 +22,7 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
 		return
 	}
-	resp := meResponse{AuthEnabled: h.auth.AuthEnabled()}
+	resp := meResponse{AuthEnabled: h.auth.AuthEnabled(), Version: h.auth.Config().Version}
 	if !resp.AuthEnabled {
 		resp.Admin = true
 	} else if subject, _, ok := h.auth.Authenticate(r); ok && subject != "" {

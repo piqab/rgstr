@@ -703,3 +703,16 @@ func TestPendingFreeAndGCReport(t *testing.T) {
 		t.Errorf("pending after GC: %+v", disk.Pending)
 	}
 }
+
+func TestVersionReported(t *testing.T) {
+	srv, _ := newTestServer(t)
+	for _, path := range []string{"/healthz", "/ui/api/me"} {
+		resp := do(t, "GET", srv.URL+path, nil, nil)
+		var body struct{ Version string }
+		json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if body.Version != "v0.0.0-test" {
+			t.Errorf("%s version: %q", path, body.Version)
+		}
+	}
+}
