@@ -114,7 +114,19 @@ const App = (() => {
     }
   }
 
+  // Password managers offer to save credentials when a form is really
+  // submitted. After a sign-in (or password change) has succeeded through
+  // fetch, the form is submitted once more, natively, into a hidden iframe
+  // (POST /ui/api/remember, which ignores it). The submit handlers let this
+  // one pass.
+  let remembering = false;
+  function rememberLogin(form) {
+    remembering = true;
+    try { form.requestSubmit ? form.requestSubmit() : form.submit(); } finally { remembering = false; }
+  }
+
   async function doLogin(e) {
+    if (remembering) return; // native submit into the iframe
     e.preventDefault();
     const username = $('li-user').value, password = $('li-pass').value;
     const res = await post('/ui/api/login', {username, password});
@@ -127,6 +139,7 @@ const App = (() => {
       return;
     }
     if (!res.ok) { showLoginError(t('login.invalid')); return; }
+    rememberLogin($('login-form'));
     startSession(res.data);
   }
 
@@ -202,6 +215,7 @@ const App = (() => {
   }
 
   async function doChangePassword(e) {
+    if (remembering) return; // native submit into the iframe
     e.preventDefault();
     const next = $('pw-new').value;
     if (next !== $('pw-repeat').value) { showPasswordError(t('pw.mismatch')); return; }
@@ -210,6 +224,8 @@ const App = (() => {
     const password = forced ? forced.password : $('pw-current').value;
     const res = await post('/ui/api/password', {username, password, new_password: next});
     if (!res.ok) { showPasswordError(res.data.error || t('common.failed', {status: res.status})); return; }
+    $('pw-user').value = username;
+    rememberLogin($('pw-form'));
     $('pw-overlay').classList.remove('show');
     if (forced) {
       session.forced = null;

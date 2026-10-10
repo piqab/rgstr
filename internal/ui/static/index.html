@@ -9,12 +9,14 @@
 <body>
 
 <div class="overlay" id="login-overlay">
-  <form class="dialog" id="login-form">
+  <!-- A real (iframe) submit after a successful sign-in lets browsers
+       offer to save the password; see App.rememberLogin. -->
+  <form class="dialog" id="login-form" method="post" action="/ui/api/remember" target="pm-frame">
     <h2 data-t="login.title">rgstr — sign in</h2>
     <label for="li-user" data-t="login.username">Username</label>
-    <input id="li-user" type="text" autocomplete="username" required>
+    <input id="li-user" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
     <label for="li-pass" data-t="login.password">Password</label>
-    <input id="li-pass" type="password" autocomplete="current-password" required>
+    <input id="li-pass" name="password" type="password" autocomplete="current-password" required>
     <button type="submit" class="btn btn-primary btn-block" data-t="login.submit">Sign in</button>
     <div class="err" id="li-err"></div>
     <div class="lang-links" id="login-langs"></div>
@@ -23,17 +25,19 @@
 </div>
 
 <div class="overlay" id="pw-overlay">
-  <form class="dialog" id="pw-form">
+  <form class="dialog" id="pw-form" method="post" action="/ui/api/remember" target="pm-frame">
+    <!-- Tells password managers whose password changes. -->
+    <input id="pw-user" name="username" type="text" autocomplete="username" style="display:none">
     <h2 id="pw-title"></h2>
     <p class="note" id="pw-note"></p>
     <div id="pw-current-wrap">
       <label for="pw-current" data-t="pw.current">Current password</label>
-      <input id="pw-current" type="password" autocomplete="current-password">
+      <input id="pw-current" name="current-password" type="password" autocomplete="current-password">
     </div>
     <label for="pw-new" data-t="pw.new">New password</label>
-    <input id="pw-new" type="password" autocomplete="new-password" minlength="8" required>
+    <input id="pw-new" name="new-password" type="password" autocomplete="new-password" minlength="8" required>
     <label for="pw-repeat" data-t="pw.repeat">Repeat new password</label>
-    <input id="pw-repeat" type="password" autocomplete="new-password" minlength="8" required>
+    <input id="pw-repeat" name="new-password-repeat" type="password" autocomplete="new-password" minlength="8" required>
     <button type="submit" class="btn btn-primary btn-block" data-t="pw.save">Save password</button>
     <button type="button" class="btn btn-block" id="pw-cancel" data-t="common.cancel">Cancel</button>
     <div class="err" id="pw-err"></div>
@@ -60,6 +64,7 @@
 <footer id="footer"></footer>
 
 <div id="toast"></div>
+<iframe name="pm-frame" id="pm-frame" title="" tabindex="-1" style="display:none"></iframe>
 
 <script src="/ui/static/core.js"></script>
 <script src="/ui/static/repos.js"></script>

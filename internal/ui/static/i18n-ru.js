@@ -34,7 +34,6 @@ App.addLang('ru', {
   'common.copyFailed': 'Не удалось скопировать — выделите текст и скопируйте вручную',
   'common.copy': 'Копировать',
   'repos.copyHint': 'Скопировать {path}',
-  'repos.selectHint': 'Имя можно выделить и скопировать',
   'time.now': 'только что',
   'time.min': '{n} мин назад',
   'time.hour': '{n} ч назад',

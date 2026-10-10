@@ -108,3 +108,15 @@ func (h *Handler) handlePassword(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+// handleRemember is the target of the login form's native submit, made
+// only so browsers offer to save the password (the sign-in itself already
+// happened through /ui/api/login). The body is discarded unread.
+func (h *Handler) handleRemember(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write([]byte("<!doctype html><title>ok</title>"))
+}

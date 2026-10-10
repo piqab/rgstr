@@ -94,7 +94,7 @@
     return `
     <div class="repo-card${openRepos.has(r.name) ? ' open' : ''}" data-repo="${esc(r.name)}">
       <div class="repo-header" data-act="toggle">
-        <span class="repo-name" title="${esc(t('repos.selectHint'))}">${esc(r.name)}</span>
+        <span class="repo-name">${esc(r.name)}</span>
         <button class="btn btn-sm" data-act="copy" title="${esc(t('repos.copyHint', {path: App.registryHost() + '/' + r.name}))}">⧉ ${esc(t('common.copy'))}</button>
         <span class="repo-meta">${esc(t('repos.meta', {tags: n, pulls: r.pulls}))}</span>
         ${r.can_delete ? `<button class="btn btn-sm btn-danger" data-act="delete-repo">${esc(t('repos.deleteRepo'))}</button>` : ''}
@@ -147,8 +147,6 @@
     if (!btn || btn.tagName === 'INPUT') return;
     const act = btn.dataset.act;
     if (act === 'toggle') {
-      // The name is text to select and copy; it does not fold the card.
-      if (e.target.closest('.repo-name') || String(window.getSelection()).trim()) return;
       if (card.classList.toggle('open')) openRepos.add(repo.name); else openRepos.delete(repo.name);
     } else if (act === 'copy') {
       e.stopPropagation();
@@ -272,7 +270,6 @@ App.addLang('en', {
   'repos.deletedRepo': 'Deleted repository {repo}',
   'repos.immutable': 'immutable',
   'repos.copyHint': 'Copy {path}',
-  'repos.selectHint': 'The name can be selected and copied',
   'repos.openImage': 'Open image details',
   'repos.immutableHint': 'Protected by an immutability policy: cannot be overwritten or deleted',
 });
