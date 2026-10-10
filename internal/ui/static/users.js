@@ -192,7 +192,7 @@ App.addLang('en', {
   'users.changed': 'changed {time}',
   'users.reset': 'Reset password',
   'users.resetTitle': 'Reset password for {name}',
-  'users.resetNote': 'The user signs in with this password. Sessions and docker logins that are already open stay valid until their token expires.',
+  'users.resetNote': 'The user signs in with this password. Their web admin sessions end now; docker logins made earlier stay valid until their token expires.',
   'users.generate': 'Generate',
   'users.mustChange': 'Require a password change at the first sign-in',
   'users.roleSaved': 'Role changed',

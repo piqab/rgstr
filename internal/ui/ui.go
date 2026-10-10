@@ -60,6 +60,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/login", h.handleLogin)
 	mux.HandleFunc("/ui/api/password", h.handlePassword)
 	mux.HandleFunc("/ui/api/remember", h.handleRemember)
+	mux.HandleFunc("/ui/api/session/refresh", h.handleRefresh)
+	mux.HandleFunc("/ui/api/logout", h.handleLogout)
 
 	mux.HandleFunc("/ui/api/repos", h.handleRepos)
 	mux.HandleFunc("/ui/api/repos/delete", h.handleDeleteRepo)

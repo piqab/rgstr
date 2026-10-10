@@ -120,3 +120,34 @@ func (h *Handler) handleRemember(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write([]byte("<!doctype html><title>ok</title>"))
 }
+
+// bearer returns the request's Bearer token.
+func bearer(r *http.Request) string {
+	const p = "Bearer "
+	if h := r.Header.Get("Authorization"); len(h) > len(p) && h[:len(p)] == p {
+		return h[len(p):]
+	}
+	return ""
+}
+
+// handleRefresh extends the caller's web admin session.
+func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	token, err := h.auth.RefreshSession(bearer(r))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+}
+
+// handleLogout ends the caller's web admin session on the server.
+func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	h.auth.Logout(bearer(r))
+	w.WriteHeader(http.StatusNoContent)
+}

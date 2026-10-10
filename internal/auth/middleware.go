@@ -47,6 +47,7 @@ type Handler struct {
 	creds    *credentials
 	audit    *audit.Log
 	meta     *meta.Store // projects; nil = none
+	sessions sessionState
 }
 
 // SetMeta enables projects (membership and public flags) from m.
@@ -123,7 +124,7 @@ func (h *Handler) Authenticate(r *http.Request) (subject string, access []Access
 	switch {
 	case strings.HasPrefix(hdr, "Bearer "):
 		claims, err := h.tokenSvc.Verify(strings.TrimPrefix(hdr, "Bearer "))
-		if err != nil {
+		if err != nil || !h.sessionValid(claims) {
 			return "", nil, false
 		}
 		return claims.Subject, claims.Access, true
@@ -283,13 +284,19 @@ func (h *Handler) Login(username, password string) (string, error) {
 	case mustChange:
 		return "", ErrPasswordChangeRequired
 	}
-	return h.tokenSvc.Issue(username, h.FullAccess(username))
+	return h.newSession(username)
 }
 
 // ChangePassword sets a new password for username after verifying the
 // current one (which may be the bootstrap password).
+// Every web admin session of the user ends; the UI signs in again with the
+// new password.
 func (h *Handler) ChangePassword(username, current, next string) error {
-	return h.creds.change(username, current, next)
+	if err := h.creds.change(username, current, next); err != nil {
+		return err
+	}
+	h.endSessions(username)
+	return nil
 }
 
 // AuthEnabled reports whether authentication is switched on.
@@ -720,7 +727,11 @@ func (h *Handler) ResetPassword(name, password string, mustChange bool) error {
 	if len(password) < minPasswordLen {
 		return ErrWeakPassword
 	}
-	return h.creds.setPassword(name, password, mustChange)
+	if err := h.creds.setPassword(name, password, mustChange); err != nil {
+		return err
+	}
+	h.endSessions(name)
+	return nil
 }
 
 // UserExists reports whether name is a known user.

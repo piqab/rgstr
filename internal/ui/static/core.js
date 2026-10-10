@@ -42,9 +42,16 @@ const App = (() => {
   }
 
   // ── Session ───────────────────────────────────────────────────────────────
-  // The session token (never the password) lives in sessionStorage.
+  // The session token (never the password) lives in localStorage, shared by
+  // all tabs and kept across browser restarts until the session ends.
+  const TOKEN_KEY = 'rgstr_token';
+  const store = {
+    get() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; } },
+    set(v) { try { localStorage.setItem(TOKEN_KEY, v); } catch (e) { /* private mode: tab only */ } },
+    clear() { try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* ignore */ } },
+  };
   const session = {
-    token: sessionStorage.getItem('rgstr_token') || '',
+    token: store.get(),
     user: '',
     admin: false,
     projectAdmin: false, // manages at least one project
@@ -89,7 +96,10 @@ const App = (() => {
       const a = e.target.closest('[data-lang]');
       if (a) { e.preventDefault(); setLang(a.dataset.lang); }
     });
-    $('btn-logout').addEventListener('click', () => showLogin(''));
+    $('btn-logout').addEventListener('click', logout);
+    window.addEventListener('storage', onStorage);
+    setInterval(refreshSession, 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshSession(); });
     $('btn-password').addEventListener('click', () => openPasswordForm());
     $('pw-form').addEventListener('submit', doChangePassword);
     $('pw-cancel').addEventListener('click', closePasswordForm);
@@ -145,7 +155,7 @@ const App = (() => {
 
   function startSession(s) {
     session.token = s.token;
-    sessionStorage.setItem('rgstr_token', s.token);
+    store.set(s.token);
     $('li-pass').value = '';
     $('login-overlay').classList.remove('show');
     signedIn(s.user, s.admin, s.project_admin);
@@ -175,7 +185,7 @@ const App = (() => {
     session.admin = false;
     session.projectAdmin = false;
     session.ready = false;
-    sessionStorage.removeItem('rgstr_token');
+    store.clear();
     $('app').style.display = 'none';
     $('footer').style.display = 'none';
     $('btn-password').style.display = 'none';
@@ -187,6 +197,43 @@ const App = (() => {
     $('login-overlay').classList.add('show');
     showLoginError(msg);
     $('li-user').focus();
+  }
+
+  // Sign out: end the session on the server, then everywhere locally (other
+  // tabs follow through the storage event).
+  async function logout() {
+    if (session.token) await api('/ui/api/logout', {method: 'POST'});
+    showLogin('');
+  }
+
+  // Another tab signed in, refreshed or signed out.
+  function onStorage(e) {
+    if (e.key !== TOKEN_KEY) return;
+    if (!e.newValue) {
+      if (session.ready && session.authEnabled) showLogin('');
+    } else if (session.ready) {
+      session.token = e.newValue;
+    } else {
+      location.reload();
+    }
+  }
+
+  // Sessions last RGSTR_SESSION_TTL and are extended while the admin is
+  // open: once a quarter of the token's lifetime has passed it is renewed.
+  let refreshing = false;
+  async function refreshSession() {
+    if (!session.ready || !session.token || refreshing) return;
+    let claims;
+    try { claims = JSON.parse(atob(session.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch (e) { return; }
+    if (!claims.sid) return;
+    const now = Date.now() / 1000;
+    if (now - claims.iat < (claims.exp - claims.iat) / 4) return;
+    refreshing = true;
+    try {
+      const res = await api('/ui/api/session/refresh', {method: 'POST'});
+      if (res.ok) { session.token = res.data.token; store.set(res.data.token); }
+      else if (res.status === 401) showLogin(t('login.expired'));
+    } finally { refreshing = false; }
   }
 
   function showLoginError(msg) {
@@ -227,11 +274,10 @@ const App = (() => {
     $('pw-user').value = username;
     rememberLogin($('pw-form'));
     $('pw-overlay').classList.remove('show');
-    if (forced) {
-      session.forced = null;
-      const s = await post('/ui/api/login', {username, password: next});
-      if (s.ok) startSession(s.data); else showLogin(t('pw.signInNew'));
-    }
+    session.forced = null;
+    // A password change ends all sessions of the user; start a new one.
+    const s = await post('/ui/api/login', {username, password: next});
+    if (s.ok) startSession(s.data); else showLogin(t('pw.signInNew'));
     toast(t('pw.changed'));
   }
 

@@ -24,6 +24,12 @@ type Data struct {
 	Robots           map[string]Robot   `json:"robots,omitempty"`
 	Webhooks         []Webhook          `json:"webhooks,omitempty"`
 	PendingFree      []PendingFree      `json:"pending_free,omitempty"`
+
+	// Web admin sessions ended early: by sign-out (session ID → until when
+	// to reject it) and by password changes (user → sessions started
+	// before this time are rejected).
+	RevokedSessions   map[string]time.Time `json:"revoked_sessions,omitempty"`
+	SessionsNotBefore map[string]time.Time `json:"sessions_not_before,omitempty"`
 }
 
 // PendingFree is something deleted whose data GC has not removed yet.

@@ -38,6 +38,11 @@ type Claims struct {
 	IssuedAt  int64    `json:"iat"`
 	JWTID     string   `json:"jti"`
 	Access    []Access `json:"access"`
+
+	// Web admin sessions only: a session ID shared by the tokens a session
+	// is refreshed with, and when the session started (Unix nanoseconds).
+	SessionID    string `json:"sid,omitempty"`
+	SessionStart int64  `json:"sst,omitempty"`
 }
 
 // TokenService creates and verifies JWT tokens signed with HMAC-SHA256.
@@ -64,6 +69,25 @@ func (s *TokenService) Issue(subject string, access []Access) (string, error) {
 		IssuedAt:  now.Unix(),
 		JWTID:     base64.RawURLEncoding.EncodeToString(jti),
 		Access:    access,
+	}
+	return sign(claims, s.cfg.AuthSecret)
+}
+
+// IssueSession mints a web admin session token valid for ttl.
+func (s *TokenService) IssueSession(subject string, access []Access, sid string, start time.Time, ttl time.Duration) (string, error) {
+	now := time.Now()
+	jti := make([]byte, 16)
+	rand.Read(jti)
+	claims := Claims{
+		Issuer:       s.cfg.AuthIssuer,
+		Subject:      subject,
+		Audience:     s.cfg.AuthService,
+		ExpiresAt:    now.Add(ttl).Unix(),
+		IssuedAt:     now.Unix(),
+		JWTID:        base64.RawURLEncoding.EncodeToString(jti),
+		Access:       access,
+		SessionID:    sid,
+		SessionStart: start.UnixNano(),
 	}
 	return sign(claims, s.cfg.AuthSecret)
 }

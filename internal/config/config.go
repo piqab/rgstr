@@ -23,6 +23,9 @@ type Config struct {
 	AuthService string // "service" claim in tokens
 	AuthIssuer  string // "iss" claim in tokens
 	TokenTTL    time.Duration
+	// SessionTTL is how long a web admin session lasts without activity
+	// (RGSTR_SESSION_TTL); sessions are extended while in use.
+	SessionTTL time.Duration
 
 	// Users is username → bcrypt hash, loaded from RGSTR_USERS env var.
 	// Format: "alice:$2b$...,bob:$2b$..."
@@ -75,6 +78,7 @@ func Load() *Config {
 		AuthService: env("RGSTR_AUTH_SERVICE", "rgstr"),
 		AuthIssuer:  env("RGSTR_AUTH_ISSUER", "rgstr"),
 		TokenTTL:    envDuration("RGSTR_TOKEN_TTL", time.Hour),
+		SessionTTL:  envDuration("RGSTR_SESSION_TTL", 12*time.Hour),
 
 		Users:          parseUsers(env("RGSTR_USERS", "")),
 		AdminUser:      env("RGSTR_ADMIN_USER", "admin"),
