@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"net/http"
+	"net/url"
 
 	"rgstr/internal/audit"
 	"rgstr/internal/auth"
@@ -109,16 +110,112 @@ func (h *Handler) handlePassword(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRemember is the target of the login form's native submit, made
-// only so browsers offer to save the password (the sign-in itself already
-// happened through /ui/api/login). The body is discarded unread.
-func (h *Handler) handleRemember(w http.ResponseWriter, r *http.Request) {
+// ─── Native form sign-in ─────────────────────────────────────────────────────
+//
+// Password managers reliably offer to save credentials only after a real
+// form submission that navigates the page. So the sign-in and password
+// forms POST here; on success the session token is handed to the page in a
+// short-lived cookie (rgstr_handoff, read and deleted by the page at once,
+// never used for authentication) and the browser is redirected to /ui.
+
+const handoffCookie = "rgstr_handoff"
+
+// sameOrigin rejects cross-site form posts (login CSRF).
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" || origin == "null" {
+		return origin == ""
+	}
+	u, err := url.Parse(origin)
+	return err == nil && u.Host == r.Host
+}
+
+func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: handoffCookie, Value: token, Path: "/ui", MaxAge: 60,
+		SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
+	})
+}
+
+func backToUI(w http.ResponseWriter, r *http.Request, q url.Values) {
+	loc := "/ui"
+	if len(q) > 0 {
+		loc += "?" + q.Encode()
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, loc, http.StatusSeeOther)
+}
+
+// handleFormLogin signs in from the login form.
+func (h *Handler) handleFormLogin(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodPost) {
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Write([]byte("<!doctype html><title>ok</title>"))
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-site sign-in refused")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	r.ParseForm()
+	user, pass := r.PostForm.Get("username"), r.PostForm.Get("password")
+	token, err := h.auth.Login(user, pass)
+	q := url.Values{}
+	switch {
+	case errors.Is(err, auth.ErrPasswordChangeRequired):
+		q.Set("must_change", "1")
+		q.Set("user", user)
+	case err != nil:
+		h.audit(r, user, audit.LoginFailed, "", "web admin", nil)
+		q.Set("error", "invalid")
+		q.Set("user", user)
+	default:
+		h.audit(r, user, audit.Login, "", "web admin", nil)
+		h.handoff(w, r, token)
+	}
+	backToUI(w, r, q)
+}
+
+// handleFormPassword changes a password from the password form (also the
+// forced change of a temporary password) and signs in with the new one.
+func (h *Handler) handleFormPassword(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross-site request refused")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	r.ParseForm()
+	f := r.PostForm
+	user, current, next := f.Get("username"), f.Get("current-password"), f.Get("new-password")
+	q := url.Values{"user": {user}, "mode": {f.Get("mode")}}
+	var err error
+	if next != f.Get("new-password-repeat") {
+		q.Set("pw_error", "mismatch")
+		backToUI(w, r, q)
+		return
+	}
+	err = h.auth.ChangePassword(user, current, next)
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		h.audit(r, user, audit.LoginFailed, "", "password change", nil)
+		q.Set("pw_error", "current")
+	case errors.Is(err, auth.ErrWeakPassword):
+		q.Set("pw_error", "weak")
+	case errors.Is(err, auth.ErrSamePassword):
+		q.Set("pw_error", "same")
+	case err != nil:
+		q.Set("pw_error", "failed")
+	default:
+		h.audit(r, user, audit.PasswordChange, user, "", nil)
+		if token, err := h.auth.Login(user, next); err == nil {
+			h.audit(r, user, audit.Login, "", "web admin", nil)
+			h.handoff(w, r, token)
+		}
+		q = url.Values{"pw": {"changed"}}
+	}
+	backToUI(w, r, q)
 }
 
 // bearer returns the request's Bearer token.

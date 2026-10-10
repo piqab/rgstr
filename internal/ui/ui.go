@@ -59,7 +59,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/me", h.handleMe)
 	mux.HandleFunc("/ui/api/login", h.handleLogin)
 	mux.HandleFunc("/ui/api/password", h.handlePassword)
-	mux.HandleFunc("/ui/api/remember", h.handleRemember)
+	mux.HandleFunc("/ui/login", h.handleFormLogin)
+	mux.HandleFunc("/ui/password", h.handleFormPassword)
+	mux.HandleFunc("/favicon.ico", h.handleFavicon)
 	mux.HandleFunc("/ui/api/session/refresh", h.handleRefresh)
 	mux.HandleFunc("/ui/api/logout", h.handleLogout)
 
@@ -116,6 +118,14 @@ func (h *Handler) servePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(page)
+}
+
+// handleFavicon serves /favicon.ico, which browsers request on their own.
+func (h *Handler) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	ico, _ := staticFiles.ReadFile("static/favicon.ico")
+	w.Header().Set("Content-Type", "image/x-icon")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(ico)
 }
 
 // noCache makes browsers revalidate static files, so an upgrade is picked

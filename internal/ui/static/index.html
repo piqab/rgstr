@@ -4,14 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>rgstr</title>
+<link rel="icon" href="/ui/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/ui/static/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/ui/static/apple-touch-icon.png">
+<meta name="theme-color" content="#1a1a2e">
 <link rel="stylesheet" href="/ui/static/app.css">
 </head>
 <body>
 
 <div class="overlay" id="login-overlay">
-  <!-- A real (iframe) submit after a successful sign-in lets browsers
-       offer to save the password; see App.rememberLogin. -->
-  <form class="dialog" id="login-form" method="post" action="/ui/api/remember" target="pm-frame">
+  <!-- Submitted natively (page navigation), so browsers offer to save the
+       password. The server hands the session back to the page; see core.js. -->
+  <form class="dialog" id="login-form" method="post" action="/ui/login">
     <h2 data-t="login.title">rgstr — sign in</h2>
     <label for="li-user" data-t="login.username">Username</label>
     <input id="li-user" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
@@ -25,13 +29,14 @@
 </div>
 
 <div class="overlay" id="pw-overlay">
-  <form class="dialog" id="pw-form" method="post" action="/ui/api/remember" target="pm-frame">
+  <form class="dialog" id="pw-form" method="post" action="/ui/password">
+    <input type="hidden" name="mode" id="pw-mode">
     <!-- Tells password managers whose password changes. -->
     <input id="pw-user" name="username" type="text" autocomplete="username" style="display:none">
     <h2 id="pw-title"></h2>
     <p class="note" id="pw-note"></p>
     <div id="pw-current-wrap">
-      <label for="pw-current" data-t="pw.current">Current password</label>
+      <label for="pw-current" id="pw-current-label">Current password</label>
       <input id="pw-current" name="current-password" type="password" autocomplete="current-password">
     </div>
     <label for="pw-new" data-t="pw.new">New password</label>
@@ -64,7 +69,6 @@
 <footer id="footer"></footer>
 
 <div id="toast"></div>
-<iframe name="pm-frame" id="pm-frame" title="" tabindex="-1" style="display:none"></iframe>
 
 <script src="/ui/static/core.js"></script>
 <script src="/ui/static/repos.js"></script>

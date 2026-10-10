@@ -716,3 +716,70 @@ func TestVersionReported(t *testing.T) {
 		}
 	}
 }
+
+func TestFormLoginAndPassword(t *testing.T) {
+	srv := newAuthTestServer(t) // admin/changeme (temporary), alice/secret
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	form := func(path, body string, headers map[string]string) *http.Response {
+		req, _ := http.NewRequest("POST", srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	handoff := func(r *http.Response) string {
+		for _, c := range r.Cookies() {
+			if c.Name == "rgstr_handoff" {
+				return c.Value
+			}
+		}
+		return ""
+	}
+
+	r := form("/ui/login", "username=alice&password=secret", nil)
+	if r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/ui" || handoff(r) == "" {
+		t.Errorf("login: %d %s cookie=%q", r.StatusCode, r.Header.Get("Location"), handoff(r))
+	}
+	if code := status(t, "GET", srv.URL+"/ui/api/repos", map[string]string{"Authorization": "Bearer " + handoff(r)}); code != http.StatusOK {
+		t.Errorf("handed-off token: %d", code)
+	}
+
+	r = form("/ui/login", "username=alice&password=wrong", nil)
+	if loc := r.Header.Get("Location"); loc != "/ui?error=invalid&user=alice" || handoff(r) != "" {
+		t.Errorf("wrong password: %s", loc)
+	}
+	r = form("/ui/login", "username=admin&password=changeme", nil)
+	if loc := r.Header.Get("Location"); loc != "/ui?must_change=1&user=admin" {
+		t.Errorf("temporary password: %s", loc)
+	}
+	r = form("/ui/login", "username=alice&password=secret", map[string]string{"Origin": "https://evil.example"})
+	if r.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-site login: %d want 403", r.StatusCode)
+	}
+
+	// Forced change through the form, then signed in with the new password.
+	r = form("/ui/password", "mode=forced&username=admin&current-password=changeme&new-password=a&new-password-repeat=b", nil)
+	if loc := r.Header.Get("Location"); !strings.Contains(loc, "pw_error=mismatch") || !strings.Contains(loc, "mode=forced") {
+		t.Errorf("mismatch: %s", loc)
+	}
+	r = form("/ui/password", "mode=forced&username=admin&current-password=nope&new-password=new-pass-1&new-password-repeat=new-pass-1", nil)
+	if loc := r.Header.Get("Location"); !strings.Contains(loc, "pw_error=current") {
+		t.Errorf("wrong current: %s", loc)
+	}
+	r = form("/ui/password", "mode=forced&username=admin&current-password=changeme&new-password=new-pass-1&new-password-repeat=new-pass-1", nil)
+	if r.Header.Get("Location") != "/ui?pw=changed" || handoff(r) == "" {
+		t.Errorf("forced change: %s cookie=%q", r.Header.Get("Location"), handoff(r))
+	}
+
+	resp := do(t, "GET", srv.URL+"/favicon.ico", nil, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/x-icon" {
+		t.Errorf("favicon: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+}

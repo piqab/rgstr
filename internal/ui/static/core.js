@@ -106,6 +106,7 @@ const App = (() => {
     $('modal-overlay').addEventListener('click', e => { if (e.target.id === 'modal-overlay') closeModal(); });
     window.addEventListener('hashchange', route);
 
+    const params = takeRedirect();
     const me = await api('/ui/api/me');
     session.authEnabled = me.data.auth_enabled;
     session.version = me.data.version || '';
@@ -119,46 +120,46 @@ const App = (() => {
       showApp();
     } else if (me.data.user) {
       signedIn(me.data.user, me.data.admin, me.data.project_admin);
-    } else {
-      showLogin(session.token ? t('login.expired') : '');
-    }
-  }
-
-  // Password managers offer to save credentials when a form is really
-  // submitted. After a sign-in (or password change) has succeeded through
-  // fetch, the form is submitted once more, natively, into a hidden iframe
-  // (POST /ui/api/remember, which ignores it). The submit handlers let this
-  // one pass.
-  let remembering = false;
-  function rememberLogin(form) {
-    remembering = true;
-    try { form.requestSubmit ? form.requestSubmit() : form.submit(); } finally { remembering = false; }
-  }
-
-  async function doLogin(e) {
-    if (remembering) return; // native submit into the iframe
-    e.preventDefault();
-    const username = $('li-user').value, password = $('li-pass').value;
-    const res = await post('/ui/api/login', {username, password});
-    if (res.status === 403 && res.data.must_change) {
-      // Temporary password: it only allows setting a new one.
-      session.forced = {username, password};
-      $('li-pass').value = '';
+      if (params.get('pw') === 'changed') toast(t('pw.changed'));
+      if (params.get('pw_error')) openPasswordForm({error: params.get('pw_error')});
+    } else if (params.get('must_change') || (params.get('pw_error') && params.get('mode') === 'forced')) {
+      showLogin('');
       $('login-overlay').classList.remove('show');
-      openPasswordForm();
-      return;
+      openPasswordForm({forced: params.get('user') || '', error: params.get('pw_error')});
+    } else {
+      const user = params.get('user');
+      if (user) $('li-user').value = user;
+      showLogin(params.get('error') ? t('login.invalid') : (session.token ? t('login.expired') : ''));
+      if (user) $('li-pass').focus();
     }
-    if (!res.ok) { showLoginError(t('login.invalid')); return; }
-    rememberLogin($('login-form'));
-    startSession(res.data);
   }
 
-  function startSession(s) {
-    session.token = s.token;
-    store.set(s.token);
-    $('li-pass').value = '';
-    $('login-overlay').classList.remove('show');
-    signedIn(s.user, s.admin, s.project_admin);
+  // Sign-in and password changes are real form submissions (so password
+  // managers offer to save the password). The server answers with a
+  // redirect back to /ui: on success the session token arrives in the
+  // short-lived rgstr_handoff cookie, otherwise the query says what failed.
+  function doLogin() {
+    rememberPlace();
+    // no preventDefault: the browser submits the form to /ui/login
+  }
+
+  function rememberPlace() {
+    try { sessionStorage.setItem('rgstr_return', location.hash); } catch (e) { /* ignore */ }
+  }
+
+  // takeRedirect reads the result of a form submission and cleans the URL.
+  function takeRedirect() {
+    const params = new URLSearchParams(location.search);
+    const m = document.cookie.match(/(?:^|; )rgstr_handoff=([^;]*)/);
+    if (m) {
+      session.token = decodeURIComponent(m[1]);
+      store.set(session.token);
+      document.cookie = 'rgstr_handoff=; Max-Age=0; Path=/ui; SameSite=Strict';
+    }
+    let back = '';
+    try { back = sessionStorage.getItem('rgstr_return') || ''; sessionStorage.removeItem('rgstr_return'); } catch (e) { /* ignore */ }
+    if (location.search || (back && !location.hash)) history.replaceState(null, '', '/ui' + (location.hash || back));
+    return params;
   }
 
   function signedIn(name, admin, projectAdmin) {
@@ -243,42 +244,39 @@ const App = (() => {
 
   // ── Password change ───────────────────────────────────────────────────────
 
-  function openPasswordForm() {
-    const forced = session.forced;
+  // openPasswordForm shows the password form; with o.forced (a user name)
+  // it is the forced change of a temporary password, entered as "current".
+  function openPasswordForm(o) {
+    o = o || {};
+    session.forced = o.forced !== undefined ? o.forced : null;
+    const forced = session.forced !== null;
     $('pw-form').reset();
-    showPasswordError('');
+    $('pw-user').value = forced ? session.forced : session.user;
+    $('pw-mode').value = forced ? 'forced' : 'change';
+    showPasswordError(o.error ? t('pw.err.' + o.error) : '');
     $('pw-title').textContent = forced ? t('pw.forcedTitle') : t('pw.title');
-    $('pw-note').textContent = forced ? t('pw.forcedNote') : '';
+    $('pw-note').textContent = forced ? t('pw.forcedNote', {user: session.forced}) : '';
     $('pw-note').style.display = forced ? 'block' : 'none';
-    $('pw-current-wrap').style.display = forced ? 'none' : 'block';
-    $('pw-current').required = !forced;
+    $('pw-current-label').textContent = forced ? t('pw.temporary') : t('pw.current');
+    $('pw-current').required = true;
     $('pw-overlay').classList.add('show');
-    (forced ? $('pw-new') : $('pw-current')).focus();
+    $('pw-current').focus();
   }
 
   function closePasswordForm() {
     $('pw-overlay').classList.remove('show');
-    if (session.forced) { session.forced = null; showLogin(''); }
+    if (session.forced !== null) { session.forced = null; showLogin(''); }
   }
 
-  async function doChangePassword(e) {
-    if (remembering) return; // native submit into the iframe
-    e.preventDefault();
-    const next = $('pw-new').value;
-    if (next !== $('pw-repeat').value) { showPasswordError(t('pw.mismatch')); return; }
-    const forced = session.forced;
-    const username = forced ? forced.username : session.user;
-    const password = forced ? forced.password : $('pw-current').value;
-    const res = await post('/ui/api/password', {username, password, new_password: next});
-    if (!res.ok) { showPasswordError(res.data.error || t('common.failed', {status: res.status})); return; }
-    $('pw-user').value = username;
-    rememberLogin($('pw-form'));
-    $('pw-overlay').classList.remove('show');
-    session.forced = null;
-    // A password change ends all sessions of the user; start a new one.
-    const s = await post('/ui/api/login', {username, password: next});
-    if (s.ok) startSession(s.data); else showLogin(t('pw.signInNew'));
-    toast(t('pw.changed'));
+  function doChangePassword(e) {
+    if ($('pw-new').value !== $('pw-repeat').value) {
+      e.preventDefault();
+      showPasswordError(t('pw.mismatch'));
+      return;
+    }
+    rememberPlace();
+    // no preventDefault: the browser submits the form to /ui/password,
+    // which changes the password and signs in with the new one
   }
 
   function showPasswordError(msg) {
@@ -474,7 +472,13 @@ App.addLang('en', {
   'login.expired': 'Session expired, please sign in again',
   'pw.title': 'Change password',
   'pw.forcedTitle': 'Set a new password',
-  'pw.forcedNote': 'You signed in with a temporary password. Choose a new password (at least 8 characters) to continue.',
+  'pw.forcedNote': 'User {user} has a temporary password. Enter it and choose a new password (at least 8 characters) to continue.',
+  'pw.temporary': 'Temporary password',
+  'pw.err.mismatch': 'Passwords do not match',
+  'pw.err.current': 'The current password is wrong',
+  'pw.err.weak': 'The new password must be at least 8 characters',
+  'pw.err.same': 'The new password must differ from the current one',
+  'pw.err.failed': 'The password could not be changed',
   'pw.current': 'Current password',
   'pw.new': 'New password',
   'pw.repeat': 'Repeat new password',
