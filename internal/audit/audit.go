@@ -31,6 +31,7 @@ const (
 	UserDelete     = "user_delete"
 	UserRole       = "user_role"
 	UserPassword   = "user_password_reset"
+	CLISecret      = "cli_secret"
 	GCRun          = "gc_run"
 	GCSettings     = "gc_settings"
 	RetentionRun   = "retention_run"

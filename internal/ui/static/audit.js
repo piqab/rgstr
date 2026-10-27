@@ -119,6 +119,7 @@ App.addLang('en', {
   'act.user_delete': 'delete user',
   'act.user_role': 'change role',
   'act.user_password_reset': 'reset password',
+  'act.cli_secret': 'new CLI secret',
   'act.gc_run': 'GC run',
   'act.gc_settings': 'GC schedule',
   'act.retention_run': 'retention run',

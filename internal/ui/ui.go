@@ -64,6 +64,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/favicon.ico", h.handleFavicon)
 	mux.HandleFunc("/ui/api/session/refresh", h.handleRefresh)
 	mux.HandleFunc("/ui/api/logout", h.handleLogout)
+	mux.HandleFunc("/ui/oidc/login", h.handleOIDCLogin)
+	mux.HandleFunc("/ui/oidc/callback", h.handleOIDCCallback)
+	mux.HandleFunc("/ui/api/cli-secret", h.handleCLISecret)
 
 	mux.HandleFunc("/ui/api/repos", h.handleRepos)
 	mux.HandleFunc("/ui/api/repos/delete", h.handleDeleteRepo)

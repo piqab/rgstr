@@ -28,6 +28,8 @@ var (
 	ErrEnvUser                = errors.New("this user is configured in the environment; change it there")
 	ErrInvalidName            = errors.New("invalid user name: use letters, digits, '.', '_' or '-' (up to 64)")
 	ErrInvalidRole            = errors.New("role must be admin, user or readonly")
+	ErrExternalUser           = errors.New("this user signs in through LDAP or SSO; the password is managed there")
+	ErrLocalUser              = errors.New("a local user with this name exists")
 )
 
 const minPasswordLen = 8
@@ -69,6 +71,11 @@ type storedPassword struct {
 	Role       string    `json:"role,omitempty"`        // managed users only
 	MustChange bool      `json:"must_change,omitempty"` // temporary password set by an admin
 	CreatedAt  time.Time `json:"created_at,omitempty"`
+	// External users (LDAP, OIDC) have no password here: Source names the
+	// provider, CLISecret is the hash of their docker login secret.
+	Source    string    `json:"source,omitempty"`
+	CLISecret string    `json:"cli_secret,omitempty"`
+	LastLogin time.Time `json:"last_login,omitempty"`
 }
 
 type usersFile struct {
@@ -188,6 +195,9 @@ func (c *credentials) check(user, password string) (ok, mustChange bool) {
 		return false, false
 	}
 	if sp, found := c.stored(user); found {
+		if sp.Source != "" {
+			return false, false // external: checked by the provider
+		}
 		return bcrypt.CompareHashAndPassword([]byte(sp.Hash), []byte(password)) == nil, sp.MustChange
 	}
 	if c.isBootstrap(user) {
@@ -225,6 +235,9 @@ func (c *credentials) setPassword(user, password string, mustChange bool) error 
 	defer c.mu.Unlock()
 
 	sp, found := c.users[user]
+	if found && sp.Source != "" {
+		return ErrExternalUser
+	}
 	if !found || sp.Base != "" || !sp.Managed {
 		// Env user: remember which env credential this password replaces.
 		env := c.envCredential(user)

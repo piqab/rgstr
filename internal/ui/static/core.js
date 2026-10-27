@@ -55,6 +55,7 @@ const App = (() => {
     user: '',
     admin: false,
     projectAdmin: false, // manages at least one project
+    source: '',          // 'ldap' or 'oidc' for directory users
     authEnabled: true,
     ready: false,
     // Set while a temporary password must be replaced: the credentials the
@@ -101,6 +102,8 @@ const App = (() => {
     setInterval(refreshSession, 60 * 1000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshSession(); });
     $('btn-password').addEventListener('click', () => openPasswordForm());
+    $('btn-cli').addEventListener('click', openCLISecret);
+    $('li-sso-link').addEventListener('click', rememberPlace);
     $('pw-form').addEventListener('submit', doChangePassword);
     $('pw-cancel').addEventListener('click', closePasswordForm);
     $('modal-overlay').addEventListener('click', e => { if (e.target.id === 'modal-overlay') closeModal(); });
@@ -110,6 +113,11 @@ const App = (() => {
     const me = await api('/ui/api/me');
     session.authEnabled = me.data.auth_enabled;
     session.version = me.data.version || '';
+    session.sso = me.data.sso || '';
+    if (session.sso) {
+      $('li-sso').style.display = 'block';
+      $('li-sso-link').textContent = t('login.sso', {name: session.sso});
+    }
     if (session.version) {
       $('footer').textContent = 'rgstr ' + session.version;
       $('login-version').textContent = 'rgstr ' + session.version;
@@ -119,6 +127,7 @@ const App = (() => {
       $('hdr-user').textContent = t('hdr.noauth');
       showApp();
     } else if (me.data.user) {
+      session.source = me.data.source || '';
       signedIn(me.data.user, me.data.admin, me.data.project_admin);
       if (params.get('pw') === 'changed') toast(t('pw.changed'));
       if (params.get('pw_error')) openPasswordForm({error: params.get('pw_error')});
@@ -129,7 +138,9 @@ const App = (() => {
     } else {
       const user = params.get('user');
       if (user) $('li-user').value = user;
-      showLogin(params.get('error') ? t('login.invalid') : (session.token ? t('login.expired') : ''));
+      const err = params.get('error');
+      showLogin(err === 'sso' ? t('login.ssoErr.' + (params.get('reason') || 'provider'))
+        : err ? t('login.invalid') : (session.token ? t('login.expired') : ''));
       if (user) $('li-pass').focus();
     }
   }
@@ -167,7 +178,10 @@ const App = (() => {
     session.admin = !!admin;
     session.projectAdmin = !!projectAdmin;
     $('hdr-user').textContent = name;
-    $('btn-password').style.display = 'block';
+    // Directory users change their password in the directory; for docker
+    // login they make a CLI secret.
+    $('btn-password').style.display = session.source ? 'none' : 'block';
+    $('btn-cli').style.display = session.source ? 'block' : 'none';
     $('btn-logout').style.display = 'block';
     showApp();
   }
@@ -185,11 +199,13 @@ const App = (() => {
     session.user = '';
     session.admin = false;
     session.projectAdmin = false;
+    session.source = '';
     session.ready = false;
     store.clear();
     $('app').style.display = 'none';
     $('footer').style.display = 'none';
     $('btn-password').style.display = 'none';
+    $('btn-cli').style.display = 'none';
     $('btn-logout').style.display = 'none';
     $('hdr-user').textContent = '';
     $('nav').innerHTML = '';
@@ -282,6 +298,34 @@ const App = (() => {
   function showPasswordError(msg) {
     $('pw-err').textContent = msg || '';
     $('pw-err').style.display = msg ? 'block' : 'none';
+  }
+
+  // ── CLI secret ────────────────────────────────────────────────────────────
+  // LDAP and SSO users have no rgstr password; docker login takes a secret
+  // made here (LDAP users may also use their directory password).
+
+  function openCLISecret() {
+    const m = openModal(`
+      <h2>${esc(t('cli.title'))}</h2>
+      <p class="note">${esc(t(session.source === 'ldap' ? 'cli.noteLdap' : 'cli.note'))}</p>
+      <div id="cli-out"></div>
+      <div class="dialog-actions">
+        <button class="btn" id="cli-close">${esc(t('common.close'))}</button>
+        <button class="btn btn-primary" id="cli-new">${esc(t('cli.generate'))}</button>
+      </div>`);
+    m.querySelector('#cli-close').addEventListener('click', closeModal);
+    m.querySelector('#cli-new').addEventListener('click', async () => {
+      const res = await api('/ui/api/cli-secret', {method: 'POST'});
+      if (!res.ok) { toast(res.data.error || t('common.failed', {status: res.status})); return; }
+      const cmd = `echo '${res.data.secret}' | docker login ${registryHost()} -u '${res.data.user}' --password-stdin`;
+      m.querySelector('#cli-out').innerHTML = `
+        <p class="muted small">${esc(t('cli.once'))}</p>
+        <div class="card mono" style="user-select:all;word-break:break-all">${esc(res.data.secret)}</div>
+        <p class="muted small">${esc(t('cli.usage'))}</p>
+        <div class="card mono" style="user-select:all;word-break:break-all">${esc(cmd)}</div>`;
+      m.querySelector('#cli-new').textContent = t('cli.copy');
+      m.querySelector('#cli-new').onclick = e => { e.stopImmediatePropagation(); copyText(res.data.secret); };
+    }, {once: true});
   }
 
   // ── Routing ───────────────────────────────────────────────────────────────
@@ -487,6 +531,21 @@ App.addLang('en', {
   'pw.changed': 'Password changed',
   'pw.signInNew': 'Sign in with your new password',
   'hdr.password': 'Change password',
+  'hdr.cli': 'CLI secret',
+  'login.or': 'or',
+  'login.sso': 'Sign in with {name}',
+  'login.ssoErr.provider': 'Single sign-on failed. Try again or ask an administrator.',
+  'login.ssoErr.state': 'The sign-in expired. Please try again.',
+  'login.ssoErr.denied': 'Your account is not in a group allowed to use this registry.',
+  'login.ssoErr.username': 'The identity provider sent no usable user name.',
+  'login.ssoErr.local': 'A local user with your name exists. Sign in with its password.',
+  'cli.title': 'CLI secret',
+  'cli.note': 'Your account signs in through single sign-on and has no password here. For docker login, helm and CI use a CLI secret. Generating a new one revokes the previous secret.',
+  'cli.noteLdap': 'docker login accepts your directory password. A CLI secret is an alternative that does not expose it (for CI and scripts). Generating a new one revokes the previous secret.',
+  'cli.generate': 'Generate new secret',
+  'cli.once': 'Copy it now — it is not shown again:',
+  'cli.usage': 'Usage:',
+  'cli.copy': 'Copy secret',
   'hdr.logout': 'Sign out',
   'hdr.noauth': 'auth disabled',
   'common.cancel': 'Cancel',

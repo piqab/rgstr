@@ -14,6 +14,7 @@
 - **Cross-repo mount** — мгновенное монтирование blob'а из другого репозитория без передачи данных (при наличии права pull на исходный репозиторий)
 - **Garbage collection** — периодическая очистка образов без тегов, их blob'ов и зависших сессий загрузки; не мешает идущему push
 - **Bearer token auth** — JWT (HS256) по Docker auth specification, Basic auth на токен-эндпоинте
+- **LDAP, Active Directory и единый вход (OIDC)** — вход по паролю из каталога или через Keycloak, Authentik, Entra ID, Google; роли по группам
 - **Публичные и приватные репозитории** — гибкий контроль доступа через glob-паттерны, анонимный pull без авторизации
 - **Range downloads** — поддержка HTTP `Range` заголовка при скачивании слоёв
 - **Без внешних зависимостей рантайма** — один статический бинарь, нет баз данных, нет сторонних сервисов
@@ -157,6 +158,8 @@ docker push localhost:5000/myrepo/alpine:latest
 docker pull localhost:5000/myrepo/alpine:latest
 ```
 
+Один каталог данных — один процесс rgstr: пока rgstr работает, он держит блокировку `<RGSTR_STORAGE>/.rgstr.lock`, и второй процесс на тех же данных (второй контейнер на общем томе, NFS) не запустится. После падения процесса блокировку снимает ядро, перезапуск не блокируется.
+
 Для доступа с других машин по HTTP см. [Настройка Docker daemon для HTTP реестра](#настройка-docker-daemon-для-http-реестра) или настройте [TLS](#tls).
 
 ### Из исходников
@@ -199,6 +202,8 @@ cp .env.example .env
 | `RGSTR_TRUSTED_PROXIES` | loopback и частные сети | Прокси, чьему `X-Forwarded-For` верить при записи IP клиента; `none` — не верить никому (см. [fail2ban](#fail2ban)) |
 | `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
 | `RGSTR_METRICS_ENABLED` | `false` | Метрики Prometheus на `/metrics` (см. [Метрики](#метрики)) |
+| `RGSTR_LDAP_*` | — | Вход по паролю LDAP / Active Directory (см. [LDAP](#ldap-и-active-directory)) |
+| `RGSTR_OIDC_*` | — | Вход в веб-админку через OpenID Connect (см. [Единый вход](#единый-вход-oidc)) |
 | `RGSTR_GC_INTERVAL` | `1h` | Интервал запуска сборщика мусора |
 | `RGSTR_UPLOAD_TTL` | `24h` | Через сколько удалять незавершённые загрузки. Это же льготный период GC: загруженное недавно не удаляется, даже если на него ещё не указывает тег |
 
@@ -474,6 +479,116 @@ docker login localhost:5000
 И перезапустите Docker: `sudo systemctl restart docker`.
 
 ---
+
+## LDAP, Active Directory и единый вход
+
+Помимо локальных пользователей rgstr принимает пользователей каталога. Они
+появляются в списке пользователей при первом входе (источник «LDAP» или «SSO»),
+могут быть участниками проектов, а их роль берётся из групп каталога.
+
+Правила для обоих способов:
+
+- **Локальные пользователи главнее.** Пользователь из env или созданный в админке
+  входит только со своим паролем; пользователь каталога с тем же именем не
+  войдёт. Первый администратор поэтому работает, даже если каталог недоступен.
+- **Имена хранятся в нижнем регистре**: `Alice` и `alice` — один пользователь.
+- **Роли по группам.** Если заданы `*_ADMIN_GROUPS` или `*_READONLY_GROUPS`,
+  роль при каждом входе берётся из групп: администратор, только чтение, иначе
+  `*_DEFAULT_ROLE`. Если не заданы — роль меняется в админке и сохраняется.
+- **Ограничение доступа.** `*_ALLOWED_GROUPS` пускает только участников этих
+  групп (и групп ролей).
+- Группа сравнивается без учёта регистра по полному имени/DN или по `CN` из DN:
+  `registry-admins` совпадает с `CN=registry-admins,OU=Groups,DC=corp`.
+- Пароль такого пользователя хранится в каталоге: сменить или сбросить его в
+  rgstr нельзя. Удаление в админке убирает пользователя и его сессии; при
+  следующем входе он появится снова — закрывайте доступ в каталоге или группами.
+
+### LDAP и Active Directory
+
+docker login и вход в веб-админку принимают пароль из каталога. rgstr ищет
+запись пользователя (от имени служебной учётной записи или анонимно), затем
+проверяет пароль, подключаясь от имени найденной записи. Удачная проверка
+кешируется на минуту.
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `RGSTR_LDAP_URL` | — | `ldap://host:389` или `ldaps://host:636`. Пусто — LDAP выключен |
+| `RGSTR_LDAP_STARTTLS` | `false` | StartTLS поверх `ldap://` |
+| `RGSTR_LDAP_CA_FILE` | системные | CA-сертификат сервера (PEM) |
+| `RGSTR_LDAP_INSECURE_SKIP_VERIFY` | `false` | Не проверять сертификат (только для тестов) |
+| `RGSTR_LDAP_BIND_DN`, `RGSTR_LDAP_BIND_PASSWORD` | анонимно | Служебная учётная запись для поиска |
+| `RGSTR_LDAP_BASE_DN` | — | Где искать пользователей |
+| `RGSTR_LDAP_USER_FILTER` | `(&(objectClass=person)(uid=%s))` | Фильтр поиска; `%s` — имя (экранируется) |
+| `RGSTR_LDAP_GROUP_ATTR` | `memberOf` | Атрибут записи пользователя со списком групп |
+| `RGSTR_LDAP_GROUP_FILTER` | — | Поиск групп для каталогов без `memberOf`; `%s` — DN пользователя |
+| `RGSTR_LDAP_GROUP_BASE_DN` | `RGSTR_LDAP_BASE_DN` | Где искать группы |
+| `RGSTR_LDAP_ADMIN_GROUPS`, `RGSTR_LDAP_READONLY_GROUPS` | — | Группы ролей (через запятую) |
+| `RGSTR_LDAP_ALLOWED_GROUPS` | — | Кого вообще пускать |
+| `RGSTR_LDAP_DEFAULT_ROLE` | `user` | Роль без групп ролей: `user`, `readonly`, `admin` |
+
+Active Directory:
+
+```bash
+RGSTR_LDAP_URL=ldaps://dc1.corp.example:636
+RGSTR_LDAP_BIND_DN='CN=svc-rgstr,OU=Service,DC=corp,DC=example'
+RGSTR_LDAP_BIND_PASSWORD=...
+RGSTR_LDAP_BASE_DN='DC=corp,DC=example'
+RGSTR_LDAP_USER_FILTER='(&(objectClass=user)(sAMAccountName=%s))'
+RGSTR_LDAP_ADMIN_GROUPS=Registry-Admins
+RGSTR_LDAP_ALLOWED_GROUPS=Developers
+```
+
+OpenLDAP без оверлея `memberOf`:
+
+```bash
+RGSTR_LDAP_URL=ldap://ldap.example:389
+RGSTR_LDAP_STARTTLS=true
+RGSTR_LDAP_BASE_DN='ou=people,dc=example,dc=org'
+RGSTR_LDAP_GROUP_BASE_DN='ou=groups,dc=example,dc=org'
+RGSTR_LDAP_GROUP_FILTER='(&(objectClass=groupOfNames)(member=%s))'
+RGSTR_LDAP_ADMIN_GROUPS=registry-admins
+```
+
+### Единый вход (OIDC)
+
+На странице входа появляется кнопка «Войти через …», которая ведёт к
+провайдеру OpenID Connect (Keycloak, Authentik, Dex, Entra ID, Google, GitLab).
+Поток — authorization code с PKCE; подпись ID-токена проверяется по ключам
+провайдера.
+
+Docker не умеет входить через браузер, поэтому пользователь SSO создаёт в
+админке **CLI-секрет** (кнопка в шапке) и использует его как пароль:
+
+```bash
+echo "$CLI_SECRET" | docker login registry.example.com -u dave --password-stdin
+```
+
+Новый секрет отменяет предыдущий. Пользователи LDAP тоже могут сделать
+CLI-секрет, чтобы не хранить пароль каталога в CI.
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `RGSTR_OIDC_ISSUER` | — | URL провайдера (issuer). Пусто — OIDC выключен |
+| `RGSTR_OIDC_CLIENT_ID`, `RGSTR_OIDC_CLIENT_SECRET` | — | Клиент у провайдера; без секрета — публичный клиент с PKCE |
+| `RGSTR_OIDC_REDIRECT_URL` | из `RGSTR_AUTH_REALM` | Адрес возврата: `https://<реестр>/ui/oidc/callback` |
+| `RGSTR_OIDC_SCOPES` | `openid profile email` | Запрашиваемые scope (добавьте `groups`, если провайдер так отдаёт группы) |
+| `RGSTR_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim с именем (без него — `email`) |
+| `RGSTR_OIDC_GROUPS_CLAIM` | `groups` | Claim с группами; если его нет в ID-токене, берётся из userinfo |
+| `RGSTR_OIDC_NAME` | `SSO` | Название на кнопке входа |
+| `RGSTR_OIDC_ADMIN_GROUPS`, `RGSTR_OIDC_READONLY_GROUPS`, `RGSTR_OIDC_ALLOWED_GROUPS`, `RGSTR_OIDC_DEFAULT_ROLE` | | Как у LDAP |
+
+Keycloak: создайте клиента с типом *OpenID Connect*, включите *Client
+authentication*, в *Valid redirect URIs* укажите
+`https://registry.example.com/ui/oidc/callback`, добавьте маппер *Group
+Membership* с именем claim `groups` (выключите *Full group path*).
+
+```bash
+RGSTR_OIDC_ISSUER=https://sso.example.com/realms/main
+RGSTR_OIDC_CLIENT_ID=rgstr
+RGSTR_OIDC_CLIENT_SECRET=...
+RGSTR_OIDC_NAME=Keycloak
+RGSTR_OIDC_ADMIN_GROUPS=registry-admins
+```
 
 ## TLS
 

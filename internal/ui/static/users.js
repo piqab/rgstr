@@ -38,9 +38,13 @@
           ${['admin', 'user', 'readonly'].map(r => `<option value="${r}" ${r === u.role ? 'selected' : ''}>${esc(t('role.' + r))}</option>`).join('')}
          </select>`
       : esc(t('role.' + u.role));
-    const pw = u.must_change
-      ? `<span class="badge badge-warn">${esc(t('users.temporary'))}</span>`
-      : (u.password_changed ? `<span class="muted small">${esc(t('users.changed', {time: fmtTime(u.password_changed)}))}</span>` : '');
+    const external = u.source === 'ldap' || u.source === 'oidc';
+    const pw = external
+      ? `<span class="muted small">${esc(t('users.lastLogin', {time: fmtTime(u.last_login)}))}</span>
+         ${u.cli_secret ? `<span class="badge">${esc(t('users.cliSecret'))}</span>` : ''}`
+      : u.must_change
+        ? `<span class="badge badge-warn">${esc(t('users.temporary'))}</span>`
+        : (u.password_changed ? `<span class="muted small">${esc(t('users.changed', {time: fmtTime(u.password_changed)}))}</span>` : '');
     return `
       <tr>
         <td><b>${esc(u.name)}</b> ${me ? `<span class="badge badge-blue">${esc(t('users.you'))}</span>` : ''}</td>
@@ -49,7 +53,7 @@
         <td>${u.actions.map(a => `<span class="badge">${esc(a)}</span>`).join(' ')}</td>
         <td>${pw}</td>
         <td class="actions">
-          ${data.auth_enabled ? `<button class="btn btn-sm" data-act="reset" data-name="${esc(u.name)}">${esc(t('users.reset'))}</button>` : ''}
+          ${data.auth_enabled && !external ? `<button class="btn btn-sm" data-act="reset" data-name="${esc(u.name)}">${esc(t('users.reset'))}</button>` : ''}
           ${editable ? `<button class="btn btn-sm btn-danger" data-act="delete" data-name="${esc(u.name)}">${esc(t('common.delete'))}</button>` : ''}
         </td>
       </tr>`;
@@ -188,6 +192,12 @@ App.addLang('en', {
   'users.sourceHint.env': 'Defined in RGSTR_USERS',
   'users.sourceHint.bootstrap': 'RGSTR_ADMIN_USER / RGSTR_ADMIN_PASSWORD',
   'users.sourceHint.admin': 'Created in the admin',
+  'users.src.ldap': 'LDAP',
+  'users.src.oidc': 'SSO',
+  'users.sourceHint.ldap': 'Signs in with the directory password. Created at the first sign-in; the role follows directory groups when RGSTR_LDAP_ADMIN_GROUPS / RGSTR_LDAP_READONLY_GROUPS are set.',
+  'users.sourceHint.oidc': 'Signs in through the identity provider. Created at the first sign-in; the role follows groups when RGSTR_OIDC_ADMIN_GROUPS / RGSTR_OIDC_READONLY_GROUPS are set.',
+  'users.lastLogin': 'last sign-in {time}',
+  'users.cliSecret': 'CLI secret',
   'users.temporary': 'temporary — must be changed',
   'users.changed': 'changed {time}',
   'users.reset': 'Reset password',

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -48,6 +49,8 @@ type Handler struct {
 	audit    *audit.Log
 	meta     *meta.Store // projects; nil = none
 	sessions sessionState
+	ldap     ldapChecker // nil: LDAP off
+	oidc     *oidcAuth // nil: OIDC off
 }
 
 // SetMeta enables projects (membership and public flags) from m.
@@ -63,7 +66,18 @@ func NewHandler(cfg *config.Config, tokenSvc *TokenService, inner http.Handler) 
 	if err != nil {
 		log.Fatalf("auth: load stored passwords: %v", err)
 	}
-	return &Handler{cfg: cfg, tokenSvc: tokenSvc, inner: inner, creds: creds}
+	h := &Handler{cfg: cfg, tokenSvc: tokenSvc, inner: inner, creds: creds}
+	if cfg.LDAP.Enabled() {
+		l, err := newLDAPAuth(cfg.LDAP)
+		if err != nil {
+			log.Fatalf("auth: %v", err)
+		}
+		h.ldap = l
+	}
+	if cfg.OIDC.Enabled() {
+		h.oidc = newOIDCAuth(cfg)
+	}
+	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -135,10 +149,11 @@ func (h *Handler) Authenticate(r *http.Request) (subject string, access []Access
 			return "", nil, false
 		}
 		// A temporary password only allows changing it in the web UI.
-		if ok, mustChange := h.check(user, pass); !ok || mustChange {
+		subject, ok, mustChange := h.resolve(user, pass)
+		if !ok || mustChange {
 			return "", nil, false
 		}
-		return user, h.FullAccess(user), true
+		return subject, h.FullAccess(subject), true
 	}
 	return "", nil, false
 }
@@ -173,7 +188,10 @@ func (h *Handler) handleToken(w http.ResponseWriter, r *http.Request) {
 		password = r.Form.Get("password")
 	}
 
-	valid, mustChange := h.check(username, password)
+	subject, valid, mustChange := h.resolve(username, password)
+	if valid {
+		username = subject
+	}
 	if h.cfg.AuthEnabled && username != "" && !valid {
 		h.audit.Add(audit.Entry{User: username, IP: audit.ClientIP(r), Action: audit.LoginFailed, Detail: "docker"})
 	}
@@ -274,17 +292,25 @@ func (h *Handler) challenge(w http.ResponseWriter, r *http.Request) {
 // role-based access. Used by the web UI so it never stores the password.
 // Returns ErrPasswordChangeRequired for the bootstrap password.
 func (h *Handler) Login(username, password string) (string, error) {
+	_, token, err := h.LoginAs(username, password)
+	return token, err
+}
+
+// LoginAs is Login that also returns the signed-in name: directory users
+// are stored in lower case whatever case they typed.
+func (h *Handler) LoginAs(username, password string) (subject, token string, err error) {
 	if IsRobot(username) {
-		return "", ErrInvalidCredentials // robots use docker login only
+		return "", "", ErrInvalidCredentials // robots use docker login only
 	}
-	ok, mustChange := h.creds.check(username, password)
+	subject, ok, mustChange := h.resolveUser(username, password, false)
 	switch {
 	case !ok:
-		return "", ErrInvalidCredentials
+		return "", "", ErrInvalidCredentials
 	case mustChange:
-		return "", ErrPasswordChangeRequired
+		return "", "", ErrPasswordChangeRequired
 	}
-	return h.newSession(username)
+	token, err = h.newSession(subject)
+	return subject, token, err
 }
 
 // ChangePassword sets a new password for username after verifying the
@@ -292,6 +318,9 @@ func (h *Handler) Login(username, password string) (string, error) {
 // Every web admin session of the user ends; the UI signs in again with the
 // new password.
 func (h *Handler) ChangePassword(username, current, next string) error {
+	if _, ext := h.creds.external(strings.ToLower(username)); ext && !h.creds.isLocal(username) {
+		return ErrExternalUser
+	}
 	if err := h.creds.change(username, current, next); err != nil {
 		return err
 	}
@@ -394,15 +423,67 @@ func HashSecret(secret string) string {
 // check verifies a password or robot secret. mustChange reports a
 // temporary password.
 func (h *Handler) check(user, password string) (ok, mustChange bool) {
-	if !IsRobot(user) {
-		return h.creds.check(user, password)
+	_, ok, mustChange = h.resolve(user, password)
+	return ok, mustChange
+}
+
+// resolve verifies docker credentials: a robot secret, a local password,
+// an external user's CLI secret or an LDAP password. subject is the user
+// name to use from now on (directory names are lower-cased).
+func (h *Handler) resolve(user, password string) (subject string, ok, mustChange bool) {
+	if IsRobot(user) {
+		return user, h.checkRobot(user, password), false
 	}
+	return h.resolveUser(user, password, true)
+}
+
+// resolveUser checks a person's password. cliSecret allows an external
+// user's CLI secret (docker login, not the web admin).
+func (h *Handler) resolveUser(user, password string, cliSecret bool) (subject string, ok, mustChange bool) {
+	if user == "" {
+		return "", false, false
+	}
+	// Local users first: a directory account cannot take over a local name.
+	if h.creds.isLocal(user) {
+		ok, mustChange = h.creds.check(user, password)
+		return user, ok, mustChange
+	}
+	name := strings.ToLower(user)
+	if h.creds.isLocal(name) {
+		return "", false, false
+	}
+	if cliSecret && h.creds.checkCLISecret(name, password) {
+		return name, true, false
+	}
+	if h.ldap == nil {
+		return "", false, false
+	}
+	groups, err := h.ldap.authenticate(name, password)
+	if err != nil {
+		if !errors.Is(err, errLDAPDenied) {
+			log.Printf("auth: ldap: %v", err)
+		}
+		return "", false, false
+	}
+	role, keepRole, allowed := roleForGroups(groups, h.cfg.LDAP.Roles)
+	if !allowed {
+		return "", false, false
+	}
+	if err := h.creds.signInExternal(name, SourceLDAP, role, keepRole); err != nil {
+		log.Printf("auth: ldap user %q: %v", name, err)
+		return "", false, false
+	}
+	return name, true, false
+}
+
+// checkRobot verifies a robot secret.
+func (h *Handler) checkRobot(user, password string) bool {
 	r, found := h.robot(user)
 	if !found {
-		return false, false
+		return false
 	}
 	got := HashSecret(password)
-	return subtle.ConstantTimeCompare([]byte(got), []byte(r.SecretHash)) == 1, false
+	return subtle.ConstantTimeCompare([]byte(got), []byte(r.SecretHash)) == 1
 }
 
 // robot returns an active robot account.
@@ -677,6 +758,8 @@ type UserInfo struct {
 	Managed    bool       `json:"managed"` // stored in users.json: role editable, deletable
 	Changed    *time.Time `json:"password_changed,omitempty"`
 	Created    *time.Time `json:"created,omitempty"`
+	LastLogin  *time.Time `json:"last_login,omitempty"` // external users
+	CLISecret  bool       `json:"cli_secret,omitempty"` // external user has a docker login secret
 }
 
 // Users lists every user.
@@ -693,7 +776,13 @@ func (h *Handler) Users() []UserInfo {
 			changed := sp.ChangedAt
 			u.Changed = &changed
 			u.Managed = sp.Managed
-			if sp.Managed && sp.Base == "" {
+			if sp.Source != "" {
+				u.Source = sp.Source // "ldap" or "oidc"
+				u.Changed = nil
+				last := sp.LastLogin
+				u.LastLogin = &last
+				u.CLISecret = sp.CLISecret != ""
+			} else if sp.Managed && sp.Base == "" {
 				u.Source = "admin"
 				created := sp.CreatedAt
 				u.Created = &created
@@ -732,6 +821,30 @@ func (h *Handler) ResetPassword(name, password string, mustChange bool) error {
 	}
 	h.endSessions(name)
 	return nil
+}
+
+// Source is where user signs in: "ldap", "oidc", or "" for local users.
+func (h *Handler) Source(user string) string {
+	if sp, ok := h.creds.external(user); ok {
+		return sp.Source
+	}
+	return ""
+}
+
+// LDAPEnabled reports whether LDAP passwords are accepted.
+func (h *Handler) LDAPEnabled() bool { return h.ldap != nil && h.cfg.AuthEnabled }
+
+// NewCLISecret makes a new docker login secret for an external user,
+// replacing the previous one. Only its hash is stored.
+func (h *Handler) NewCLISecret(user string) (string, error) {
+	if _, ok := h.creds.external(user); !ok {
+		return "", ErrUserNotFound
+	}
+	secret := randomString()
+	if err := h.creds.setCLISecret(user, HashSecret(secret)); err != nil {
+		return "", err
+	}
+	return secret, nil
 }
 
 // UserExists reports whether name is a known user.

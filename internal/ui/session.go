@@ -15,6 +15,9 @@ type meResponse struct {
 	User         string `json:"user,omitempty"`
 	Admin        bool   `json:"admin"`
 	ProjectAdmin bool   `json:"project_admin"` // manages at least one project
+	Source       string `json:"source,omitempty"` // "ldap" or "oidc" for external users
+	SSO          string `json:"sso,omitempty"`    // OIDC sign-in button label; "" = off
+	LDAP         bool   `json:"ldap,omitempty"`   // LDAP passwords accepted
 }
 
 // handleMe reports whether auth is on and, if the request carries a valid
@@ -23,13 +26,15 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
 		return
 	}
-	resp := meResponse{AuthEnabled: h.auth.AuthEnabled(), Version: h.auth.Config().Version}
+	resp := meResponse{AuthEnabled: h.auth.AuthEnabled(), Version: h.auth.Config().Version,
+		SSO: h.auth.OIDCName(), LDAP: h.auth.LDAPEnabled()}
 	if !resp.AuthEnabled {
 		resp.Admin = true
 	} else if subject, _, ok := h.auth.Authenticate(r); ok && subject != "" {
 		resp.User = subject
 		resp.Admin = h.auth.IsAdmin(subject)
 		resp.ProjectAdmin = len(h.managedProjects(subject)) > 0
+		resp.Source = h.auth.Source(subject)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -47,7 +52,10 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	token, err := h.auth.Login(req.Username, req.Password)
+	subject, token, err := h.auth.LoginAs(req.Username, req.Password)
+	if err == nil {
+		req.Username = subject
+	}
 	if errors.Is(err, auth.ErrInvalidCredentials) {
 		h.audit(r, req.Username, audit.LoginFailed, "", "web admin", nil)
 	} else if err == nil {
@@ -101,7 +109,7 @@ func (h *Handler) handlePassword(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, "current password is wrong")
-	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrSamePassword):
+	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrSamePassword), errors.Is(err, auth.ErrExternalUser):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -158,7 +166,10 @@ func (h *Handler) handleFormLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	r.ParseForm()
 	user, pass := r.PostForm.Get("username"), r.PostForm.Get("password")
-	token, err := h.auth.Login(user, pass)
+	subject, token, err := h.auth.LoginAs(user, pass)
+	if err == nil {
+		user = subject
+	}
 	q := url.Values{}
 	switch {
 	case errors.Is(err, auth.ErrPasswordChangeRequired):

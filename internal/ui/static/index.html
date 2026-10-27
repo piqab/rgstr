@@ -22,6 +22,11 @@
     <label for="li-pass" data-t="login.password">Password</label>
     <input id="li-pass" name="password" type="password" autocomplete="current-password" required>
     <button type="submit" class="btn btn-primary btn-block" data-t="login.submit">Sign in</button>
+    <!-- Shown when OIDC is configured; see core.js. -->
+    <div id="li-sso" style="display:none">
+      <div class="login-or" data-t="login.or">or</div>
+      <a class="btn btn-block btn-sso" id="li-sso-link" href="/ui/oidc/login"></a>
+    </div>
     <div class="err" id="li-err"></div>
     <div class="lang-links" id="login-langs"></div>
     <div class="login-version" id="login-version"></div>
@@ -60,6 +65,7 @@
     <select id="lang-select" aria-label="Language"></select>
     <span id="hdr-user"></span>
     <button class="hdr-btn" id="btn-password" data-t="hdr.password">Change password</button>
+    <button class="hdr-btn" id="btn-cli" data-t="hdr.cli" style="display:none">CLI secret</button>
     <button class="hdr-btn" id="btn-logout" data-t="hdr.logout">Sign out</button>
   </div>
 </header>

@@ -66,7 +66,60 @@ type Config struct {
 
 	GCInterval time.Duration
 	UploadTTL  time.Duration // stale upload sessions older than this are GC'd
+
+	LDAP LDAPConfig
+	OIDC OIDCConfig
 }
+
+// GroupRoles maps directory groups to rgstr roles for external users (LDAP,
+// OIDC). Groups match by full name/DN or by the CN of a DN, ignoring case.
+type GroupRoles struct {
+	// AdminGroups and ReadOnlyGroups grant those roles; members of neither
+	// get DefaultRole. With neither set, the role is managed in the admin.
+	AdminGroups    []string
+	ReadOnlyGroups []string
+	// AllowedGroups, when set, limits sign-in to their members (and to
+	// members of AdminGroups and ReadOnlyGroups).
+	AllowedGroups []string
+	DefaultRole   string
+}
+
+// LDAPConfig enables sign-in with LDAP / Active Directory passwords
+// (RGSTR_LDAP_*). Local users are checked first.
+type LDAPConfig struct {
+	URL                string // ldap://host:389 or ldaps://host:636; empty: LDAP off
+	StartTLS           bool
+	InsecureSkipVerify bool
+	CAFile             string
+	BindDN             string // service account for the user search; empty: anonymous
+	BindPassword       string
+	BaseDN             string
+	UserFilter         string // %s is the escaped user name
+	GroupAttr          string // attribute of the user entry listing its groups
+	GroupBaseDN        string
+	GroupFilter        string // optional group search; %s is the escaped user DN
+	Roles              GroupRoles
+}
+
+// Enabled reports whether LDAP sign-in is configured.
+func (l LDAPConfig) Enabled() bool { return l.URL != "" }
+
+// OIDCConfig enables web admin sign-in through an OpenID Connect provider
+// (RGSTR_OIDC_*).
+type OIDCConfig struct {
+	Issuer        string // empty: OIDC off
+	ClientID      string
+	ClientSecret  string
+	RedirectURL   string // default: <external URL>/ui/oidc/callback
+	Scopes        []string
+	UsernameClaim string
+	GroupsClaim   string
+	Name          string // shown on the sign-in button
+	Roles         GroupRoles
+}
+
+// Enabled reports whether OIDC sign-in is configured.
+func (o OIDCConfig) Enabled() bool { return o.Issuer != "" && o.ClientID != "" }
 
 // Load reads configuration from environment variables.
 func Load() *Config {
@@ -96,6 +149,41 @@ func Load() *Config {
 
 		GCInterval: envDuration("RGSTR_GC_INTERVAL", time.Hour),
 		UploadTTL:  envDuration("RGSTR_UPLOAD_TTL", 24*time.Hour),
+
+		LDAP: LDAPConfig{
+			URL:                env("RGSTR_LDAP_URL", ""),
+			StartTLS:           envBool("RGSTR_LDAP_STARTTLS", false),
+			InsecureSkipVerify: envBool("RGSTR_LDAP_INSECURE_SKIP_VERIFY", false),
+			CAFile:             env("RGSTR_LDAP_CA_FILE", ""),
+			BindDN:             env("RGSTR_LDAP_BIND_DN", ""),
+			BindPassword:       os.Getenv("RGSTR_LDAP_BIND_PASSWORD"),
+			BaseDN:             env("RGSTR_LDAP_BASE_DN", ""),
+			UserFilter:         env("RGSTR_LDAP_USER_FILTER", "(&(objectClass=person)(uid=%s))"),
+			GroupAttr:          env("RGSTR_LDAP_GROUP_ATTR", "memberOf"),
+			GroupBaseDN:        env("RGSTR_LDAP_GROUP_BASE_DN", ""),
+			GroupFilter:        env("RGSTR_LDAP_GROUP_FILTER", ""),
+			Roles:              groupRoles("RGSTR_LDAP_"),
+		},
+		OIDC: OIDCConfig{
+			Issuer:        strings.TrimSuffix(env("RGSTR_OIDC_ISSUER", ""), "/"),
+			ClientID:      env("RGSTR_OIDC_CLIENT_ID", ""),
+			ClientSecret:  os.Getenv("RGSTR_OIDC_CLIENT_SECRET"),
+			RedirectURL:   env("RGSTR_OIDC_REDIRECT_URL", ""),
+			Scopes:        strings.Fields(strings.ReplaceAll(env("RGSTR_OIDC_SCOPES", "openid profile email"), ",", " ")),
+			UsernameClaim: env("RGSTR_OIDC_USERNAME_CLAIM", "preferred_username"),
+			GroupsClaim:   env("RGSTR_OIDC_GROUPS_CLAIM", "groups"),
+			Name:          env("RGSTR_OIDC_NAME", "SSO"),
+			Roles:         groupRoles("RGSTR_OIDC_"),
+		},
+	}
+}
+
+func groupRoles(prefix string) GroupRoles {
+	return GroupRoles{
+		AdminGroups:    parseList(env(prefix+"ADMIN_GROUPS", "")),
+		ReadOnlyGroups: parseList(env(prefix+"READONLY_GROUPS", "")),
+		AllowedGroups:  parseList(env(prefix+"ALLOWED_GROUPS", "")),
+		DefaultRole:    env(prefix+"DEFAULT_ROLE", "user"),
 	}
 }
 

@@ -36,7 +36,7 @@ func userError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrUserNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, errSelf), errors.Is(err, auth.ErrEnvUser), errors.Is(err, auth.ErrInvalidName),
-		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrWeakPassword):
+		errors.Is(err, auth.ErrInvalidRole), errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrExternalUser):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())

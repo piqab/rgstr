@@ -9,8 +9,7 @@ in English or Russian.
 
 ## Development
 
-Requirements: Go 1.26+ (the module works with older Go, but releases are
-built with the newest patch release).
+Requirements: Go 1.26+ (releases are built with the newest patch release).
 
 ```bash
 go vet ./...
