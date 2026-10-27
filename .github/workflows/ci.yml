@@ -49,14 +49,20 @@ jobs:
           docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=rgstr postgres:16-alpine
           echo '{"identities":[{"name":"ci","credentials":[{"accessKey":"cikey","secretKey":"cisecret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' > /tmp/s3.json
           docker run -d --name s3 -p 9000:8333 -v /tmp/s3.json:/etc/s3.json:ro chrislusf/seaweedfs:latest server -s3 -s3.config=/etc/s3.json
+          # Steps run with bash -e: commands that fail while the services
+          # start must not end the step (|| true).
           for i in $(seq 60); do
-            pg=$(docker exec pg pg_isready -U postgres >/dev/null 2>&1 && echo ok)
-            s3=$(curl -s -o /dev/null -w '%{http_code}' localhost:9000/)
-            [ "$pg" = ok ] && [ "$s3" != 000 ] && break
+            pg=$(docker exec pg pg_isready -U postgres >/dev/null 2>&1 && echo ok || true)
+            s3=$(curl -s -o /dev/null -w '%{http_code}' localhost:9000/ || true)
+            [ "$pg" = ok ] && [ "$s3" != 000 ] && [ -n "$s3" ] && break
             sleep 1
           done
-          sleep 5
-          docker exec s3 sh -c 'echo "s3.bucket.create -name rgstr-test" | weed shell'
+          for i in $(seq 30); do
+            docker exec s3 sh -c 'echo "s3.bucket.create -name rgstr-test" | weed shell' 2>/dev/null \
+              | grep -q 'created bucket' && break || true
+            sleep 2
+          done
+          curl -s -o /dev/null -w 'S3 answers %{http_code}\n' localhost:9000/
 
       - name: Cluster tests
         env:
