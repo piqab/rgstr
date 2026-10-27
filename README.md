@@ -881,4 +881,4 @@ main.go
 
 ## Лицензия
 
-MIT
+[MIT](LICENSE)

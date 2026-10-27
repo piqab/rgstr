@@ -61,7 +61,7 @@ jobs:
         run: |
           name="rgstr-${GITHUB_REF_NAME}-linux-${{ matrix.goarch }}"
           mkdir -p "dist/${name}"
-          cp rgstr mkpasswd README.md .env.example docker-compose.yml "dist/${name}/"
+          cp rgstr mkpasswd README.md LICENSE .env.example docker-compose.yml "dist/${name}/"
           cp -r deploy "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           # Bare binaries alongside the archive, for a plain download.
