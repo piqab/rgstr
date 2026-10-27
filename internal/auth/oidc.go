@@ -142,9 +142,13 @@ func (h *Handler) OIDCFinish(ctx context.Context, cookie, state, code string) (s
 		}
 	}
 
-	name := claimString(claims, o.cfg.UsernameClaim)
-	if name == "" && o.cfg.UsernameClaim == "preferred_username" {
-		name = claimString(claims, "email")
+	name, claim := claimString(claims, o.cfg.UsernameClaim), o.cfg.UsernameClaim
+	if name == "" && claim == "preferred_username" {
+		name, claim = claimString(claims, "email"), "email"
+	}
+	// An e-mail the provider has not verified may belong to someone else.
+	if v, ok := claims["email_verified"].(bool); claim == "email" && ok && !v {
+		return "", "", ErrOIDCUsername
 	}
 	name = strings.ToLower(name)
 	if name == "" || !externalNameRe.MatchString(name) {

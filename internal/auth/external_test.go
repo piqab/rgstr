@@ -306,6 +306,14 @@ func TestOIDCRejects(t *testing.T) {
 		t.Error(`alg "none" accepted`)
 	}
 	p.alg = "RS256"
+	p.claims = map[string]any{"email": "erin@example.com", "email_verified": false, "groups": []string{"staff"}}
+	if _, _, err := signIn(t, h, p); err != ErrOIDCUsername {
+		t.Errorf("unverified e-mail: %v", err)
+	}
+	p.claims["email_verified"] = true
+	if sub, _, err := signIn(t, h, p); err != nil || sub != "erin@example.com" {
+		t.Errorf("verified e-mail: %q %v", sub, err)
+	}
 
 	// A forged or replayed state is refused.
 	_, cookie, _ := h.OIDCBegin(context.Background(), "https://reg.example/ui/oidc/callback")

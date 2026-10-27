@@ -591,6 +591,12 @@ CLI-секрет, чтобы не хранить пароль каталога �
 | `RGSTR_OIDC_NAME` | `SSO` | Название на кнопке входа |
 | `RGSTR_OIDC_ADMIN_GROUPS`, `RGSTR_OIDC_READONLY_GROUPS`, `RGSTR_OIDC_ALLOWED_GROUPS`, `RGSTR_OIDC_DEFAULT_ROLE` | | Как у LDAP |
 
+Имя пользователя берётся из claim и связывает вход с его проектами, поэтому
+выбирайте claim, который пользователь не может поменять сам: в Keycloak
+запретите редактирование имени (*Edit username* выключен), у Google и Entra ID
+используйте `email` (неподтверждённый e-mail rgstr не примет) или
+`RGSTR_OIDC_USERNAME_CLAIM=sub`.
+
 Keycloak: создайте клиента с типом *OpenID Connect*, включите *Client
 authentication*, в *Valid redirect URIs* укажите
 `https://registry.example.com/ui/oidc/callback`, добавьте маппер *Group
