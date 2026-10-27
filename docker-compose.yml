@@ -1,8 +1,8 @@
 services:
   rgstr:
-    # Готовый образ из GitHub Container Registry — исходники не нужны.
-    # Версию можно зафиксировать: RGSTR_VERSION=1.2.3 в .env
-    # Собрать локально из исходников (в клоне репозитория):
+    # Ready-made image from the GitHub Container Registry — no sources needed.
+    # Pin a version with RGSTR_VERSION=1.2.3 in .env
+    # To build from source instead (in a clone of the repository):
     #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
     image: ghcr.io/piqab/rgstr:${RGSTR_VERSION:-latest}
     container_name: rgstr
@@ -12,7 +12,7 @@ services:
     volumes:
       - rgstr-data:/data
     env_file:
-      # Без .env реестр стартует с настройками по умолчанию (без авторизации).
+      # Without .env the registry starts with the defaults (no authentication).
       - path: .env
         required: false
     environment:

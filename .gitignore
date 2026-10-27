@@ -1,16 +1,16 @@
-# Секреты — никогда не коммитить
+# Secrets — never commit
 .env
 
-# Бинари
+# Binaries
 rgstr
 rgstr.exe
 rgstr-linux-*
 rgstr-windows-*
 
-# Данные реестра
+# Registry data
 data/
 
-# Тесты
+# Tests
 coverage.out
 coverage.html
 

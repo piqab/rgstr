@@ -1,8 +1,8 @@
 name: Release
 
-# push в main  → образ ghcr.io/<owner>/rgstr:main
-# тег v1.2.3   → GitHub Release с бинарниками + образ :1.2.3, :1.2, :latest
-# Версия хранится в файле VERSION; тег должен совпадать с v$(cat VERSION).
+# push to main → image ghcr.io/<owner>/rgstr:main
+# tag v1.2.3   → GitHub Release with binaries + images :1.2.3, :1.2, :latest
+# The version lives in the VERSION file; the tag must be v$(cat VERSION).
 on:
   push:
     branches: [main]
@@ -67,7 +67,7 @@ jobs:
         run: |
           name="rgstr-${GITHUB_REF_NAME}-linux-${{ matrix.goarch }}"
           mkdir -p "dist/${name}"
-          cp rgstr mkpasswd README.md LICENSE .env.example docker-compose.yml "dist/${name}/"
+          cp rgstr mkpasswd README.md README.ru.md LICENSE .env.example docker-compose.yml "dist/${name}/"
           cp -r deploy "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           # Bare binaries alongside the archive, for a plain download.
@@ -112,7 +112,7 @@ jobs:
         id: ver
         run: |
           v="v$(cat VERSION)"
-          # Сборки из main помечаем коммитом, чтобы не путать с релизом.
+          # Builds from main carry the commit, so they are not mistaken for a release.
           case "$GITHUB_REF" in refs/tags/v*) ;; *) v="${v}-main.${GITHUB_SHA::7}" ;; esac
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
@@ -121,7 +121,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
-          # :latest ставится автоматически только на semver-теги (последний релиз)
+          # :latest goes only to semver tags (the latest release)
           flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}

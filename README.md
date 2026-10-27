@@ -1,56 +1,58 @@
+**English** | [Русский](README.ru.md)
+
 # rgstr
 
-Минималистичный OCI/Docker container registry, написанный на Go.
+A minimalist OCI/Docker container registry written in Go.
 
-Совместим с `docker push` / `docker pull`, `crane`, `skopeo`, `containerd` и любым другим клиентом, поддерживающим [OCI Distribution Specification v1.1](https://github.com/opencontainers/distribution-spec/blob/main/spec.md).
-
----
-
-## Возможности
-
-- **Полная OCI/Docker совместимость** — поддержка Docker Registry HTTP API v2 и OCI Distribution Spec v1.1
-- **Chunked uploads** — возобновляемые загрузки с проверкой `Content-Range`
-- **Дедупликация blob'ов** — одни и те же слои хранятся на диске один раз вне зависимости от количества репозиториев
-- **Cross-repo mount** — мгновенное монтирование blob'а из другого репозитория без передачи данных (при наличии права pull на исходный репозиторий)
-- **Garbage collection** — периодическая очистка образов без тегов, их blob'ов и зависших сессий загрузки; не мешает идущему push
-- **Bearer token auth** — JWT (HS256) по Docker auth specification, Basic auth на токен-эндпоинте
-- **Кластер (HA)** — несколько процессов на S3 и PostgreSQL принимают push и pull; падение любого не останавливает реестр
-- **Бэкапы в S3 или директорию** — по расписанию, на работающем реестре, с ротацией и восстановлением одной командой
-- **LDAP, Active Directory и единый вход (OIDC)** — вход по паролю из каталога или через Keycloak, Authentik, Entra ID, Google; роли по группам
-- **Публичные и приватные репозитории** — гибкий контроль доступа через glob-паттерны, анонимный pull без авторизации
-- **Range downloads** — поддержка HTTP `Range` заголовка при скачивании слоёв
-- **Kubernetes** — [оператор rgstroperator](https://github.com/piqab/rgstroperator): реестр, том, Ingress с TLS, метрики, бэкапы и кластер одним ресурсом
-- **Без внешних зависимостей рантайма** — один статический бинарь; базы данных и сторонние сервисы нужны только для кластера (PostgreSQL и S3)
-- **Безопасность от гонок** — `sync.RWMutex` + per-digest и per-upload локи; в кластере — общая блокировка в PostgreSQL
-
-### Ограничения
-
-- **Отказоустойчивость — в [режиме кластера](#кластер-ha)** (S3 и PostgreSQL).
-  Без него rgstr — один процесс на каталоге данных (второй не запустится, см.
-  [блокировку](#конфигурация)): перезапуск даёт короткий простой.
-- **Внешние пользователи** — LDAP / Active Directory и OpenID Connect; SAML нет.
-  Пользователи SSO выполняют `docker login` с CLI-секретом из админки.
+Compatible with `docker push` / `docker pull`, `crane`, `skopeo`, `containerd` and any other client that supports the [OCI Distribution Specification v1.1](https://github.com/opencontainers/distribution-spec/blob/main/spec.md).
 
 ---
 
-## Быстрый старт
+## Features
 
-Готовые сборки публикуются автоматически через GitHub Actions:
+- **Full OCI/Docker compatibility** — supports the Docker Registry HTTP API v2 and the OCI Distribution Spec v1.1
+- **Chunked uploads** — resumable uploads with `Content-Range` validation
+- **Blob deduplication** — identical layers are stored on disk once, regardless of how many repositories use them
+- **Cross-repo mount** — instantly mount a blob from another repository without transferring data (requires pull permission on the source repository)
+- **Garbage collection** — periodic cleanup of untagged images, their blobs and stale upload sessions; does not interfere with a push in progress
+- **Bearer token auth** — JWT (HS256) per the Docker auth specification, Basic auth on the token endpoint
+- **Cluster (HA)** — several processes on S3 and PostgreSQL accept push and pull; the failure of any one of them does not stop the registry
+- **Backups to S3 or a directory** — on a schedule, on a running registry, with rotation and one-command restore
+- **LDAP, Active Directory and single sign-on (OIDC)** — sign in with a directory password or through Keycloak, Authentik, Entra ID, Google; roles from groups
+- **Public and private repositories** — flexible access control with glob patterns, anonymous pull without authentication
+- **Range downloads** — support for the HTTP `Range` header when downloading layers
+- **Kubernetes** — [the rgstroperator operator](https://github.com/piqab/rgstroperator): registry, volume, Ingress with TLS, metrics, backups and cluster in a single resource
+- **No external runtime dependencies** — a single static binary; databases and third-party services are needed only for the cluster (PostgreSQL and S3)
+- **Race safety** — `sync.RWMutex` + per-digest and per-upload locks; in the cluster, a shared lock in PostgreSQL
 
-- **бинарники** (linux/amd64, linux/arm64) — на странице [Releases](https://github.com/piqab/rgstr/releases): отдельными файлами `rgstr-linux-<arch>` и `mkpasswd-linux-<arch>` и архивом `rgstr-<версия>-linux-<arch>.tar.gz` с файлами для установки;
-- **Docker-образ** (amd64 + arm64) — `ghcr.io/piqab/rgstr`.
+### Limitations
 
-| Тег образа | Что внутри |
+- **High availability requires [cluster mode](#cluster-ha)** (S3 and PostgreSQL).
+  Without it, rgstr is a single process on a data directory (a second one will not start, see
+  [the lock](#configuration)): a restart means a short downtime.
+- **External users** — LDAP / Active Directory and OpenID Connect; no SAML.
+  SSO users run `docker login` with a CLI secret from the web admin.
+
+---
+
+## Quick start
+
+Prebuilt artifacts are published automatically by GitHub Actions:
+
+- **binaries** (linux/amd64, linux/arm64) — on the [Releases](https://github.com/piqab/rgstr/releases) page: as standalone files `rgstr-linux-<arch>` and `mkpasswd-linux-<arch>` and as an archive `rgstr-<version>-linux-<arch>.tar.gz` with the installation files;
+- **Docker image** (amd64 + arm64) — `ghcr.io/piqab/rgstr`.
+
+| Image tag | Contents |
 |---|---|
-| `latest` | последний релиз |
-| `1.2.3`, `1.2` | конкретная версия |
-| `main` | текущая ветка `main` (может быть нестабильной) |
+| `latest` | latest release |
+| `1.2.3`, `1.2` | specific version |
+| `main` | current `main` branch (may be unstable) |
 
-### Вариант 1: бинарник
+### Option 1: binary
 
 ```bash
-VERSION=v1.0.0          # нужная версия со страницы Releases
-ARCH=amd64              # или arm64
+VERSION=v1.0.0          # the version you need from the Releases page
+ARCH=amd64              # or arm64
 
 curl -LO https://github.com/piqab/rgstr/releases/download/${VERSION}/rgstr-${VERSION}-linux-${ARCH}.tar.gz
 curl -LO https://github.com/piqab/rgstr/releases/download/${VERSION}/rgstr-${VERSION}-linux-${ARCH}.tar.gz.sha256
@@ -60,92 +62,92 @@ tar xzf rgstr-${VERSION}-linux-${ARCH}.tar.gz
 cd rgstr-${VERSION}-linux-${ARCH}
 ```
 
-В архиве: бинарники `rgstr` и `mkpasswd`, `.env.example`, `docker-compose.yml`, `deploy/` (systemd unit и скрипт установки) и этот README.
+The archive contains: the `rgstr` and `mkpasswd` binaries, `.env.example`, `docker-compose.yml`, `deploy/` (systemd unit and install script) and this README.
 
-Если нужен только бинарник, без архива:
+If you only need the binary, without the archive:
 
 ```bash
 curl -L -o rgstr https://github.com/piqab/rgstr/releases/download/${VERSION}/rgstr-linux-${ARCH}
 chmod +x rgstr
 ```
 
-**Быстрый запуск в текущей директории:**
+**Quick run in the current directory:**
 
 ```bash
 RGSTR_STORAGE=./data ./rgstr
 ```
 
-Конфигурация задаётся только переменными окружения (см. [Конфигурация](#конфигурация)); сам бинарник `.env` не читает. Чтобы взять настройки из файла:
+Configuration is set only through environment variables (see [Configuration](#configuration)); the binary itself does not read `.env`. To load settings from a file:
 
 ```bash
 cp .env.example .env
-# отредактируйте .env
+# edit .env
 set -a; . ./.env; set +a
 ./rgstr
 ```
 
-**Установка как systemd-сервис (production):**
+**Install as a systemd service (production):**
 
 ```bash
 sudo ./deploy/install.sh ./rgstr
-sudo nano /etc/rgstr/env        # auth, пользователи, публичные репозитории
+sudo nano /etc/rgstr/env        # auth, users, public repositories
 sudo systemctl restart rgstr
 ```
 
-Подробнее — в разделе [Развёртывание на Linux](#развёртывание-на-linux).
+See [Deploying on Linux](#deploying-on-linux) for details.
 
-### Вариант 2: Docker Compose
+### Option 2: Docker Compose
 
-Нужны только два файла — `docker-compose.yml` и `.env`. Исходники клонировать и собирать не нужно:
+You only need two files — `docker-compose.yml` and `.env`. There is no need to clone or build the sources:
 
 ```bash
 mkdir rgstr && cd rgstr
 curl -LO https://raw.githubusercontent.com/piqab/rgstr/main/docker-compose.yml
 curl -L -o .env https://raw.githubusercontent.com/piqab/rgstr/main/.env.example
-# (или возьмите оба файла из архива релиза)
+# (or take both files from the release archive)
 
-# В .env задайте:
+# In .env set:
 #   RGSTR_AUTH_ENABLED=true
 #   RGSTR_AUTH_SECRET=<openssl rand -hex 32>
-#   RGSTR_AUTH_REALM=http://<адрес сервера>:5000/v2/auth
-#   RGSTR_ADMIN_PASSWORD=<временный пароль>
+#   RGSTR_AUTH_REALM=http://<server address>:5000/v2/auth
+#   RGSTR_ADMIN_PASSWORD=<temporary password>
 
 docker compose pull
 docker compose up -d
 docker compose logs -f
 ```
 
-Откройте `http://<адрес сервера>:5000/ui`, войдите как `admin` с временным паролем и задайте постоянный — до этого `docker login` под `admin` не пройдёт. Остальных пользователей можно добавить в `RGSTR_USERS` (см. [Формат RGSTR_USERS](#формат-rgstr_users)).
+Open `http://<server address>:5000/ui`, sign in as `admin` with the temporary password and set a permanent one — until then, `docker login` as `admin` will not succeed. Other users can be added to `RGSTR_USERS` (see [RGSTR_USERS format](#rgstr_users-format)).
 
-Если пакет `ghcr.io/piqab/rgstr` приватный, перед `pull` войдите в GHCR с GitHub-токеном, у которого есть право `read:packages`:
+If the `ghcr.io/piqab/rgstr` package is private, sign in to GHCR before `pull` with a GitHub token that has the `read:packages` scope:
 
 ```bash
 echo <TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
 ```
 
-По умолчанию берётся образ `ghcr.io/piqab/rgstr:latest`. Зафиксировать версию — переменной `RGSTR_VERSION` (в `.env` или в окружении):
+The `ghcr.io/piqab/rgstr:latest` image is used by default. To pin a version, use the `RGSTR_VERSION` variable (in `.env` or in the environment):
 
 ```bash
 echo "RGSTR_VERSION=1.2.0" >> .env
 docker compose pull && docker compose up -d
 ```
 
-Обновление: `docker compose pull && docker compose up -d`.
-Собрать образ локально из исходников (в клоне репозитория), не скачивая из GHCR:
+Upgrade: `docker compose pull && docker compose up -d`.
+To build the image locally from source (in a clone of the repository) instead of pulling it from GHCR:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
-Веб-интерфейс поднимается вместе с реестром: `http://<адрес>:5000/ui`.
+The web UI starts together with the registry: `http://<address>:5000/ui`.
 
-**Если `docker compose pull` / `up` пишет `unauthorized`** — Docker не может скачать образ: пакет в GHCR приватный (войдите через `docker login ghcr.io`, см. выше, или сделайте пакет публичным) либо образ этой версии ещё не опубликован (проверьте, что релизная сборка в GitHub Actions прошла, а тег `RGSTR_VERSION` существует).
+**If `docker compose pull` / `up` reports `unauthorized`** — Docker cannot pull the image: either the GHCR package is private (sign in with `docker login ghcr.io`, see above, or make the package public), or the image for this version has not been published yet (check that the release build in GitHub Actions succeeded and that the `RGSTR_VERSION` tag exists).
 
-`docker compose` передаёт все переменные из `.env` в контейнер. `RGSTR_STORAGE` всегда переопределяется на `/data` (Docker volume).
+`docker compose` passes all variables from `.env` into the container. `RGSTR_STORAGE` is always overridden to `/data` (Docker volume).
 
-> **Внимание:** данные хранятся в named volume `rgstr-data` (управляется Docker), а не в локальной папке `./data`. Найти volume на хосте: `docker volume inspect rgstr-data`. Если нужна локальная папка — замените в `docker-compose.yml` `rgstr-data:/data` на `./data:/data` и удалите секцию `volumes: rgstr-data:`.
+> **Note:** data is stored in the named volume `rgstr-data` (managed by Docker), not in a local `./data` folder. To locate the volume on the host: `docker volume inspect rgstr-data`. If you need a local folder, replace `rgstr-data:/data` with `./data:/data` in `docker-compose.yml` and remove the `volumes: rgstr-data:` section.
 
-### Вариант 3: docker run
+### Option 3: docker run
 
 ```bash
 docker run -d \
@@ -156,17 +158,17 @@ docker run -d \
   ghcr.io/piqab/rgstr:latest
 ```
 
-### Вариант 4: Kubernetes
+### Option 4: Kubernetes
 
-[rgstroperator](https://github.com/piqab/rgstroperator) разворачивает rgstr ресурсом `Registry`: том, секрет с временным паролем администратора, Ingress с TLS, метрики, бэкапы, LDAP/OIDC и кластер из нескольких реплик.
+[rgstroperator](https://github.com/piqab/rgstroperator) deploys rgstr as a `Registry` resource: volume, a secret with the administrator's temporary password, Ingress with TLS, metrics, backups, LDAP/OIDC and a cluster of several replicas.
 
 ```bash
 helm install rgstroperator oci://ghcr.io/piqab/charts/rgstroperator -n rgstroperator-system --create-namespace
 ```
 
-### Проверка
+### Verify
 
-Реестр слушает `http://localhost:5000`:
+The registry listens on `http://localhost:5000`:
 
 ```bash
 curl http://localhost:5000/v2/
@@ -177,11 +179,11 @@ docker push localhost:5000/myrepo/alpine:latest
 docker pull localhost:5000/myrepo/alpine:latest
 ```
 
-Один каталог данных — один процесс rgstr: пока rgstr работает, он держит блокировку `<RGSTR_STORAGE>/.rgstr.lock`, и второй процесс на тех же данных (второй контейнер на общем томе, NFS) не запустится. После падения процесса блокировку снимает ядро, перезапуск не блокируется.
+One data directory, one rgstr process: while rgstr is running it holds the lock `<RGSTR_STORAGE>/.rgstr.lock`, and a second process on the same data (a second container on a shared volume, NFS) will not start. If the process crashes, the kernel releases the lock, so a restart is not blocked.
 
-Для доступа с других машин по HTTP см. [Настройка Docker daemon для HTTP реестра](#настройка-docker-daemon-для-http-реестра) или настройте [TLS](#tls).
+For access from other machines over HTTP, see [Configuring the Docker daemon for an HTTP registry](#configuring-the-docker-daemon-for-an-http-registry) or set up [TLS](#tls).
 
-### Из исходников
+### From source
 
 ```bash
 git clone https://github.com/piqab/rgstr
@@ -192,296 +194,296 @@ make build
 
 ---
 
-## Конфигурация
+## Configuration
 
-Все параметры задаются переменными окружения. Скопируйте `.env.example` в `.env` и отредактируйте:
+All settings are set through environment variables. Copy `.env.example` to `.env` and edit it:
 
 ```bash
 cp .env.example .env
 ```
 
-| Переменная | По умолчанию | Описание |
+| Variable | Default | Description |
 |---|---|---|
-| `RGSTR_ADDR` | `:5000` | Адрес и порт для прослушивания |
-| `RGSTR_STORAGE` | `./data` | Путь к директории хранилища |
-| `RGSTR_TLS_CERT` | — | Путь к TLS-сертификату (PEM) |
-| `RGSTR_TLS_KEY` | — | Путь к TLS-ключу (PEM) |
-| `RGSTR_AUTH_ENABLED` | `false` | Включить аутентификацию |
-| `RGSTR_AUTH_SECRET` | `change-me-in-production` | Секрет для подписи JWT |
-| `RGSTR_AUTH_REALM` | `http://localhost:5000/v2/auth` | URL токен-эндпоинта (возвращается в WWW-Authenticate) |
-| `RGSTR_AUTH_SERVICE` | `rgstr` | Имя сервиса в токенах |
-| `RGSTR_AUTH_ISSUER` | `rgstr` | Издатель токенов (поле `iss`) |
-| `RGSTR_TOKEN_TTL` | `1h` | Время жизни токена `docker login` |
-| `RGSTR_SESSION_TTL` | `12h` | Сколько живёт сессия веб-админки без активности; пока админка открыта, сессия продлевается |
-| `RGSTR_USERS` | — | Список пользователей (см. ниже) |
-| `RGSTR_ADMIN_USER` | `admin` | Имя первого администратора |
-| `RGSTR_ADMIN_PASSWORD` | — | Временный пароль первого администратора, без хеша. Требует смены при первом входе в `/ui` (см. [Первый администратор](#первый-администратор)) |
-| `RGSTR_ADMINS` | — | Пользователи, которым разрешено удаление (см. [Роли](#роли-пользователей)). Пусто — удалять могут все, кроме read-only |
-| `RGSTR_READONLY_USERS` | — | Пользователи только с правом pull |
-| `RGSTR_TRUSTED_PROXIES` | loopback и частные сети | Прокси, чьему `X-Forwarded-For` верить при записи IP клиента; `none` — не верить никому (см. [fail2ban](#fail2ban)) |
-| `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
-| `RGSTR_METRICS_ENABLED` | `false` | Метрики Prometheus на `/metrics` (см. [Метрики](#метрики)) |
-| `RGSTR_STORAGE_DRIVER` | `filesystem` | `filesystem` или `s3` (см. [Кластер](#кластер-ha)) |
-| `RGSTR_STORAGE_S3_*` | — | Бакет для данных при `RGSTR_STORAGE_DRIVER=s3` |
-| `RGSTR_DATABASE_URL` | — | PostgreSQL: включает режим кластера |
-| `RGSTR_BACKUP_*` | — | Бэкапы по расписанию в S3 или директорию (см. [Бэкапы](#бэкапы)) |
-| `RGSTR_LDAP_*` | — | Вход по паролю LDAP / Active Directory (см. [LDAP](#ldap-и-active-directory)) |
-| `RGSTR_OIDC_*` | — | Вход в веб-админку через OpenID Connect (см. [Единый вход](#единый-вход-oidc)) |
-| `RGSTR_GC_INTERVAL` | `1h` | Интервал запуска сборщика мусора |
-| `RGSTR_UPLOAD_TTL` | `24h` | Через сколько удалять незавершённые загрузки. Это же льготный период GC: загруженное недавно не удаляется, даже если на него ещё не указывает тег |
+| `RGSTR_ADDR` | `:5000` | Listen address and port |
+| `RGSTR_STORAGE` | `./data` | Path to the storage directory |
+| `RGSTR_TLS_CERT` | — | Path to the TLS certificate (PEM) |
+| `RGSTR_TLS_KEY` | — | Path to the TLS key (PEM) |
+| `RGSTR_AUTH_ENABLED` | `false` | Enable authentication |
+| `RGSTR_AUTH_SECRET` | `change-me-in-production` | Secret for signing JWTs |
+| `RGSTR_AUTH_REALM` | `http://localhost:5000/v2/auth` | Token endpoint URL (returned in WWW-Authenticate) |
+| `RGSTR_AUTH_SERVICE` | `rgstr` | Service name in tokens |
+| `RGSTR_AUTH_ISSUER` | `rgstr` | Token issuer (the `iss` field) |
+| `RGSTR_TOKEN_TTL` | `1h` | Lifetime of a `docker login` token |
+| `RGSTR_SESSION_TTL` | `12h` | How long an idle web admin session lives; while the web admin is open, the session is extended |
+| `RGSTR_USERS` | — | List of users (see below) |
+| `RGSTR_ADMIN_USER` | `admin` | Name of the first administrator |
+| `RGSTR_ADMIN_PASSWORD` | — | Temporary password of the first administrator, unhashed. Must be changed at the first sign-in to `/ui` (see [First administrator](#first-administrator)) |
+| `RGSTR_ADMINS` | — | Users allowed to delete (see [Roles](#user-roles)). If empty, everyone except read-only users can delete |
+| `RGSTR_READONLY_USERS` | — | Users with pull permission only |
+| `RGSTR_TRUSTED_PROXIES` | loopback and private networks | Proxies whose `X-Forwarded-For` is trusted when recording the client IP; `none` — trust no one (see [fail2ban](#fail2ban)) |
+| `RGSTR_PUBLIC_REPOS` | — | Public repository patterns (see below) |
+| `RGSTR_METRICS_ENABLED` | `false` | Prometheus metrics on `/metrics` (see [Metrics](#metrics)) |
+| `RGSTR_STORAGE_DRIVER` | `filesystem` | `filesystem` or `s3` (see [Cluster](#cluster-ha)) |
+| `RGSTR_STORAGE_S3_*` | — | Data bucket when `RGSTR_STORAGE_DRIVER=s3` |
+| `RGSTR_DATABASE_URL` | — | PostgreSQL: enables cluster mode |
+| `RGSTR_BACKUP_*` | — | Scheduled backups to S3 or a directory (see [Backups](#backups)) |
+| `RGSTR_LDAP_*` | — | Password sign-in via LDAP / Active Directory (see [LDAP](#ldap-and-active-directory)) |
+| `RGSTR_OIDC_*` | — | Web admin sign-in via OpenID Connect (see [Single sign-on](#single-sign-on-oidc)) |
+| `RGSTR_GC_INTERVAL` | `1h` | Garbage collector run interval |
+| `RGSTR_UPLOAD_TTL` | `24h` | When to remove unfinished uploads. This is also the GC grace period: recently uploaded data is not removed even if no tag points to it yet |
 
-### Формат RGSTR_USERS
+### RGSTR_USERS format
 
 ```
 RGSTR_USERS='alice:$2a$10$...,bob:$2a$10$...'
 ```
 
-Каждая запись — `имя:bcrypt-хеш`. Для генерации хеша:
+Each entry is `name:bcrypt-hash`. To generate a hash:
 
 ```bash
-# Без Go — утилита есть в Docker-образе
+# Without Go — the tool is included in the Docker image
 docker run --rm --entrypoint /mkpasswd ghcr.io/piqab/rgstr alice mypassword
-# Из архива релиза
+# From the release archive
 ./mkpasswd alice mypassword
-# Из исходников
+# From source
 go run ./cmd/mkpasswd alice mypassword
 
 # RGSTR_USERS='alice:$2a$10$...'
 ```
 
-Значение должно быть в **одинарных** кавычках — так `$` в хеше остаётся как есть и в `.env` для docker compose, и в shell, и в `/etc/rgstr/env` для systemd. Без кавычек или в двойных кавычках docker compose подставит вместо `$2a`, `$10` переменные окружения, хеш обрежется и вход перестанет работать. Подходят и хеши `htpasswd -B` (`$2y$`).
+The value must be in **single** quotes — this keeps the `$` in the hash as is in `.env` for docker compose, in the shell, and in `/etc/rgstr/env` for systemd. Without quotes or in double quotes, docker compose substitutes environment variables for `$2a`, `$10`, the hash gets truncated and sign-in stops working. `htpasswd -B` hashes (`$2y$`) also work.
 
 ---
 
-## Публичные и приватные репозитории
+## Public and private repositories
 
-По умолчанию при включённой аутентификации все репозитории приватные. Переменная `RGSTR_PUBLIC_REPOS` задаёт список паттернов, для которых анонимный `pull` разрешён без авторизации.
+By default, with authentication enabled, all repositories are private. The `RGSTR_PUBLIC_REPOS` variable sets a list of patterns for which anonymous `pull` is allowed without authentication.
 
-### Матрица доступа
+### Access matrix
 
 |  | pull | push | delete |
 |---|---|---|---|
-| Аноним, публичный репо | ✓ | ✗ | ✗ |
-| Аноним, приватный репо | ✗ | ✗ | ✗ |
-| Пользователь из `RGSTR_READONLY_USERS` | ✓ | ✗ | ✗ |
-| Обычный пользователь | ✓ | ✓ | ✗ (✓ если `RGSTR_ADMINS` пуст) |
-| Пользователь из `RGSTR_ADMINS` | ✓ | ✓ | ✓ |
-| Кто угодно при `AUTH_ENABLED=false` | ✓ | ✓ | ✓ |
+| Anonymous, public repo | ✓ | ✗ | ✗ |
+| Anonymous, private repo | ✗ | ✗ | ✗ |
+| User in `RGSTR_READONLY_USERS` | ✓ | ✗ | ✗ |
+| Regular user | ✓ | ✓ | ✗ (✓ if `RGSTR_ADMINS` is empty) |
+| User in `RGSTR_ADMINS` | ✓ | ✓ | ✓ |
+| Anyone with `AUTH_ENABLED=false` | ✓ | ✓ | ✓ |
 
-### Паттерны
+### Patterns
 
-| Паттерн | Совпадает | Не совпадает |
+| Pattern | Matches | Does not match |
 |---|---|---|
 | `alpine` | `alpine` | `myns/alpine` |
 | `library/*` | `library/ubuntu`, `library/alpine` | `library/ns/ubuntu` |
 | `public/**` | `public/myimage`, `public/ns/myimage` | `other/myimage` |
 | `**/public/**` | `alex/public/alpine`, `public/alpine`, `a/b/public/img` | `alex/private/alpine` |
-| `**` | любой репозиторий | — |
+| `**` | any repository | — |
 
-- `*` — любой одиночный сегмент пути (без слешей)
-- `**` — ноль или более сегментов пути, включая слеши (может стоять в любом месте паттерна)
-- `?` — любой одиночный символ
+- `*` — any single path segment (no slashes)
+- `**` — zero or more path segments, including slashes (can appear anywhere in the pattern)
+- `?` — any single character
 
-### Примеры
+### Examples
 
 ```bash
-# Всё в namespace "public/" доступно без логина, остальное приватное
+# Everything in the "public/" namespace is available without login, the rest is private
 RGSTR_PUBLIC_REPOS=public/**
 
-# Репозитории с сегментом "public" в любом месте пути
+# Repositories with a "public" segment anywhere in the path
 RGSTR_PUBLIC_REPOS=**/public/**
 
-# Несколько паттернов через запятую
+# Several comma-separated patterns
 RGSTR_PUBLIC_REPOS=library/*,public/**,alpine
 
-# Все репозитории публичные для pull (зеркало без ограничений)
+# All repositories public for pull (unrestricted mirror)
 RGSTR_PUBLIC_REPOS=**
 
-# Все репозитории приватные (оставить пустым)
+# All repositories private (leave empty)
 RGSTR_PUBLIC_REPOS=
 ```
 
-### Поведение клиентов
+### Client behavior
 
 ```bash
-# Публичный репо — pull без docker login
+# Public repo — pull without docker login
 docker pull registry.example.com/public/myimage:latest
 
-# Публичный репо — push требует авторизации
+# Public repo — push requires authentication
 docker push registry.example.com/public/myimage:latest
 # → unauthorized: authentication required
 
-# Приватный репо — pull требует авторизации
+# Private repo — pull requires authentication
 docker pull registry.example.com/private/myimage:latest
 # → unauthorized: authentication required
 
-# После docker login — доступ по роли пользователя
+# After docker login — access according to the user's role
 docker login registry.example.com
 docker pull registry.example.com/private/myimage:latest
 docker push registry.example.com/public/myimage:latest
 ```
 
-### Роли пользователей
+### User roles
 
-| Роль | Как задать | Права |
+| Role | How to set | Permissions |
 |---|---|---|
 | read-only | `RGSTR_READONLY_USERS=viewer,ci-reader` | pull |
-| пользователь | есть в `RGSTR_USERS` | pull, push |
-| администратор | `RGSTR_ADMINS=alice` | pull, push, удаление тегов и blob'ов, управление пользователями, политиками и GC в админке |
+| user | listed in `RGSTR_USERS` | pull, push |
+| administrator | `RGSTR_ADMINS=alice` | pull, push, deleting tags and blobs, managing users, policies and GC in the web admin |
 
-Пользователей с любой из этих ролей можно также создать в админке (страница «Users»), см. [Пользователи в админке](#пользователи-в-админке).
+Users with any of these roles can also be created in the web admin (the "Users" page), see [Users in the web admin](#users-in-the-web-admin).
 
-Первый администратор из `RGSTR_ADMIN_USER` всегда имеет права администратора, даже если его нет в `RGSTR_ADMINS`.
+The first administrator from `RGSTR_ADMIN_USER` always has administrator rights, even if not listed in `RGSTR_ADMINS`.
 
-Если `RGSTR_ADMINS` не задан, удалять могут все пользователи из `RGSTR_USERS`, кроме read-only (как в версиях до 1.1.0). Права проверяются на каждый запрос: токен даёт ровно те действия, которые были запрошены в scope и разрешены ролью. Запрещённое действие возвращает `403 DENIED` при Basic-авторизации и `401` при Bearer-токене. Роль фиксируется в токене при выдаче, поэтому изменение ролей вступает в силу после перезапуска сервера и истечения ранее выданных токенов (`RGSTR_TOKEN_TTL`).
+If `RGSTR_ADMINS` is not set, all users from `RGSTR_USERS` except read-only ones can delete (as in versions before 1.1.0). Permissions are checked on every request: a token grants exactly the actions that were requested in the scope and allowed by the role. A forbidden action returns `403 DENIED` with Basic auth and `401` with a Bearer token. The role is fixed in the token when it is issued, so role changes take effect after a server restart and once previously issued tokens expire (`RGSTR_TOKEN_TTL`).
 
-### Первый администратор
+### First administrator
 
-Чтобы не генерировать хеш для первого входа, задайте временный пароль прямо в env:
+To avoid generating a hash for the first sign-in, set a temporary password directly in env:
 
 ```
-RGSTR_ADMIN_USER=admin          # по умолчанию admin
+RGSTR_ADMIN_USER=admin          # admin by default
 RGSTR_ADMIN_PASSWORD=changeme
 ```
 
-- С временным паролем можно только войти в `/ui`: интерфейс сразу попросит задать новый пароль (не короче 8 символов). `docker login` с временным паролем отклоняется с сообщением `password change required: sign in to the web UI at /ui`.
-- Новый пароль хранится в виде bcrypt-хеша в `<RGSTR_STORAGE>/users.json` (права `0600`) и переживает перезапуски. В Docker это том `/data`.
-- После смены пароля учётная запись живёт в `users.json` и больше не зависит от env: `RGSTR_ADMIN_PASSWORD` можно убрать или оставить пустым — вход своим паролем продолжит работать. (До 1.5.0 удаление переменной удаляло учётную запись вместе с паролем.)
-- **Сброс забытого пароля:** задайте в env другое значение `RGSTR_ADMIN_PASSWORD` и перезапустите. Сохранённый пароль удаляется, новый временный снова требует смены при входе.
-- Если имя из `RGSTR_ADMIN_USER` есть и в `RGSTR_USERS`, действует временный пароль, а хеш из `RGSTR_USERS` для него игнорируется.
+- The temporary password only lets you sign in to `/ui`: the UI immediately asks you to set a new password (at least 8 characters). `docker login` with the temporary password is rejected with the message `password change required: sign in to the web UI at /ui`.
+- The new password is stored as a bcrypt hash in `<RGSTR_STORAGE>/users.json` (mode `0600`) and survives restarts. In Docker this is the `/data` volume.
+- After the password change, the account lives in `users.json` and no longer depends on env: `RGSTR_ADMIN_PASSWORD` can be removed or left empty — signing in with your own password keeps working. (Before 1.5.0, removing the variable deleted the account together with the password.)
+- **Resetting a forgotten password:** set a different `RGSTR_ADMIN_PASSWORD` value in env and restart. The saved password is deleted, and the new temporary one again must be changed at sign-in.
+- If the name from `RGSTR_ADMIN_USER` is also in `RGSTR_USERS`, the temporary password applies and the hash from `RGSTR_USERS` is ignored for it.
 
-Сменить пароль через `/ui` может любой пользователь, не только администратор. Для пользователей из `RGSTR_USERS` действует то же правило сброса: если поменять хеш пользователя в `RGSTR_USERS`, сохранённый пароль сбрасывается. Если удалить пользователя из `RGSTR_USERS`, его сохранённый пароль тоже удаляется. Смена пароля завершает сессии веб-админки пользователя; токены `docker login` действуют до истечения `RGSTR_TOKEN_TTL`.
+Any user, not only an administrator, can change their password via `/ui`. The same reset rule applies to users from `RGSTR_USERS`: if you change a user's hash in `RGSTR_USERS`, the saved password is reset. If you remove a user from `RGSTR_USERS`, their saved password is deleted too. A password change ends the user's web admin sessions; `docker login` tokens stay valid until `RGSTR_TOKEN_TTL` expires.
 
-### Проекты
+### Projects
 
-Проект объединяет репозитории с общим первым сегментом имени: проект `team` — это `team/app`, `team/db/postgres` и т. д. Проекты создаёт администратор реестра на странице «Projects».
+A project groups repositories sharing the same first name segment: the `team` project is `team/app`, `team/db/postgres`, and so on. Projects are created by a registry administrator on the "Projects" page.
 
-- **Участники и роли в проекте:**
+- **Project members and roles:**
 
-  | Роль | pull | push | delete | участники и webhooks проекта |
+  | Role | pull | push | delete | project members and webhooks |
   |---|---|---|---|---|
   | Project admin | ✓ | ✓ | ✓ | ✓ |
   | Maintainer | ✓ | ✓ | ✓ | |
   | Developer | ✓ | ✓ | | |
   | Guest | ✓ | | | |
 
-- Внутри проекта доступ есть только у участников и администраторов реестра; глобальная роль пользователя («User», «Read-only») здесь не действует. Посторонние не видят репозитории проекта ни в `/v2/_catalog`, ни в админке.
-- **Публичный проект** — pull без входа для всех (как `RGSTR_PUBLIC_REPOS`, но настраивается в админке).
-- Репозитории вне проектов работают по глобальным ролям, как раньше.
-- **Квота** на хранение (задаёт администратор реестра): считается по уникальным слоям всех образов проекта, на которые указывают теги. Push манифеста, который вывел бы проект за квоту, отклоняется (`denied: quota exceeded: project team would use 3.3 MiB of 2.0 MiB`); push без новых данных (новый тег на уже загруженный образ) проходит всегда. Занятое место и квота видны в списке проектов. Слои, загруженные без манифеста, в квоту не входят — их удаляет GC.
-- Удалить можно только пустой проект — сначала удалите его репозитории.
-- Проекты хранятся в `<RGSTR_STORAGE>/meta.json`.
+- Inside a project, only members and registry administrators have access; the user's global role ("User", "Read-only") does not apply here. Outsiders do not see the project's repositories either in `/v2/_catalog` or in the web admin.
+- **Public project** — pull without sign-in for everyone (like `RGSTR_PUBLIC_REPOS`, but configured in the web admin).
+- Repositories outside projects follow global roles, as before.
+- **Storage quota** (set by a registry administrator): calculated over the unique layers of all the project's images that tags point to. A manifest push that would take the project over its quota is rejected (`denied: quota exceeded: project team would use 3.3 MiB of 2.0 MiB`); a push without new data (a new tag on an already uploaded image) always succeeds. Used space and the quota are shown in the project list. Layers uploaded without a manifest do not count toward the quota — GC removes them.
+- Only an empty project can be deleted — delete its repositories first.
+- Projects are stored in `<RGSTR_STORAGE>/meta.json`.
 
-### Robot-аккаунты
+### Robot accounts
 
-Для CI и автоматизации администратор создаёт robot-аккаунты на странице «Robots»:
+For CI and automation, an administrator creates robot accounts on the "Robots" page:
 
-- имя вида `robot$ci`, вместо пароля — сгенерированный секрет. Секрет показывается один раз, хранится только его хеш; при утечке его можно перевыпустить (старый сразу перестаёт работать);
-- права перечисляются явно: проект (или «все репозитории») и действия pull/push/delete. Робот с правом на конкретный проект не имеет доступа к репозиториям вне проектов;
-- срок действия (30/90/180/365 дней или бессрочно), отключение. Отключённый, истёкший или удалённый робот теряет доступ сразу;
-- робот работает только через `docker login`, в веб-админку войти не может.
+- a name like `robot$ci`, and a generated secret instead of a password. The secret is shown once and only its hash is stored; if it leaks, it can be regenerated (the old one stops working immediately);
+- permissions are listed explicitly: a project (or "all repositories") and the pull/push/delete actions. A robot with permissions on a specific project has no access to repositories outside projects;
+- expiration (30/90/180/365 days or never), disabling. A disabled, expired or deleted robot loses access immediately;
+- a robot works only through `docker login`; it cannot sign in to the web admin.
 
 ```bash
-# имя в одинарных кавычках — в нём есть «$»
+# the name in single quotes — it contains "$"
 echo "$ROBOT_SECRET" | docker login registry.example.com -u 'robot$ci' --password-stdin
 ```
 
-Роботы хранятся в `<RGSTR_STORAGE>/meta.json`.
+Robots are stored in `<RGSTR_STORAGE>/meta.json`.
 
 ### Webhooks
 
-На странице «Webhooks» настраиваются HTTP-уведомления о событиях: push, pull, удаление, превышение квоты проекта.
+The "Webhooks" page configures HTTP notifications about events: push, pull, delete, project quota exceeded.
 
-- **Область:** все репозитории (только администратор реестра) или один проект (администратор реестра или админ проекта).
-- **Формат:** JSON в стиле Harbor (`{"type":"PUSH_ARTIFACT","operator":…,"event_data":{"resources":[{"digest","tag","resource_url"}],"repository":{…}}}`) или Slack-совместимый `{"text": "alice pushed …"}` — его принимают входящие webhooks Slack и Mattermost.
-- Необязательный заголовок `Authorization` (в админке не показывается после сохранения), отключение проверки TLS-сертификата.
-- Отправка в фоне, до 3 попыток при ошибке; последние 20 отправок каждого webhook видны в админке (хранятся в памяти до перезапуска). Кнопка «Send test» отправляет тестовое событие.
-- Адрес реестра в ссылках на образы берётся из `RGSTR_AUTH_REALM`.
+- **Scope:** all repositories (registry administrator only) or a single project (registry administrator or project admin).
+- **Format:** Harbor-style JSON (`{"type":"PUSH_ARTIFACT","operator":…,"event_data":{"resources":[{"digest","tag","resource_url"}],"repository":{…}}}`) or Slack-compatible `{"text": "alice pushed …"}` — accepted by Slack and Mattermost incoming webhooks.
+- Optional `Authorization` header (not shown in the web admin after saving), option to skip TLS certificate verification.
+- Delivery in the background, up to 3 attempts on error; the last 20 deliveries of each webhook are visible in the web admin (kept in memory until restart). The "Send test" button sends a test event.
+- The registry address in image links is taken from `RGSTR_AUTH_REALM`.
 
-Учтите: webhook заставляет сервер реестра отправлять запросы на указанный URL, в том числе во внутреннюю сеть. Права на создание webhooks есть только у администраторов реестра и админов проектов.
+Keep in mind: a webhook makes the registry server send requests to the given URL, including into the internal network. Only registry administrators and project admins can create webhooks.
 
-### Пользователи в админке
+### Users in the web admin
 
-На странице «Users» администратор может:
+On the "Users" page an administrator can:
 
-- создать пользователя с ролью «Administrator», «User» или «Read-only» и паролем (кнопка «Generate» придумывает случайный). По умолчанию пароль временный: при первом входе в `/ui` пользователь задаёт свой, а до этого `docker login` с временным паролем не работает. Логин и пароль показываются один раз — передайте их пользователю;
-- изменить роль и удалить созданного в админке пользователя. Удалённый пользователь теряет доступ сразу, даже с ещё действующим токеном;
-- сбросить пароль любому пользователю, в том числе из `RGSTR_USERS`.
+- create a user with the "Administrator", "User" or "Read-only" role and a password (the "Generate" button makes up a random one). By default the password is temporary: at the first sign-in to `/ui` the user sets their own, and until then `docker login` with the temporary password does not work. The username and password are shown once — pass them to the user;
+- change the role of, and delete, a user created in the web admin. A deleted user loses access immediately, even with a still valid token;
+- reset the password of any user, including those from `RGSTR_USERS`.
 
-Такие пользователи хранятся в `<RGSTR_STORAGE>/users.json`. Пользователи из `RGSTR_USERS` и первый администратор показываются в списке, но их роль и наличие задаются в env. Если в env появится пользователь с тем же именем, что и созданный в админке, действует env. Нельзя удалить себя или изменить свою роль — чтобы случайно не остаться без администратора.
+Such users are stored in `<RGSTR_STORAGE>/users.json`. Users from `RGSTR_USERS` and the first administrator are shown in the list, but their role and existence are set in env. If a user with the same name as one created in the web admin appears in env, env wins. You cannot delete yourself or change your own role — so that you do not accidentally end up without an administrator.
 
-Для пользователей, созданных в админке, правило «если `RGSTR_ADMINS` пуст, удалять могут все» не действует: их права определяет только роль.
+For users created in the web admin, the rule "if `RGSTR_ADMINS` is empty, everyone can delete" does not apply: their permissions are determined by the role alone.
 
-### Сброс пароля администратора
+### Resetting an administrator password
 
-Способ зависит от того, где задан администратор. Колонка «Source» на странице «Users» показывает это: `first admin`, `env` или `created here`.
+The method depends on where the administrator is defined. The "Source" column on the "Users" page shows this: `first admin`, `env` or `created here`.
 
-**Если есть другой администратор** — проще всего: «Users» → «Reset password» у нужного пользователя. Можно сразу отметить «Require a password change at the first sign-in».
+**If there is another administrator** — the simplest way: "Users" → "Reset password" for the user in question. You can also check "Require a password change at the first sign-in" right away.
 
-**Первый администратор (`RGSTR_ADMIN_USER` / `RGSTR_ADMIN_PASSWORD`).** Задайте новый временный пароль в env и перезапустите — сохранённый пароль удалится:
+**First administrator (`RGSTR_ADMIN_USER` / `RGSTR_ADMIN_PASSWORD`).** Set a new temporary password in env and restart — the saved password is deleted:
 
 ```bash
-# Docker Compose: отредактируйте .env
+# Docker Compose: edit .env
 RGSTR_ADMIN_PASSWORD=new-temporary-password
-docker compose up -d          # именно up -d: restart не перечитывает .env
+docker compose up -d          # specifically up -d: restart does not re-read .env
 
-# systemd: отредактируйте /etc/rgstr/env
+# systemd: edit /etc/rgstr/env
 sudo systemctl restart rgstr
 ```
 
-Войдите в `/ui` как `admin` с этим паролем — админка попросит задать постоянный. Если потом снова вернуть в env старое значение, забытый пароль не восстановится.
+Sign in to `/ui` as `admin` with this password — the web admin asks you to set a permanent one. Putting the old value back into env later does not restore the forgotten password.
 
-**Администратор из `RGSTR_USERS`.** Сгенерируйте новый хеш и замените его в `RGSTR_USERS` — пароль, сохранённый в админке, сбросится, и снова будет действовать хеш из env:
+**Administrator from `RGSTR_USERS`.** Generate a new hash and replace it in `RGSTR_USERS` — the password saved in the web admin is reset, and the hash from env applies again:
 
 ```bash
 docker run --rm --entrypoint /mkpasswd ghcr.io/piqab/rgstr alice new-password
-# RGSTR_USERS='alice:$2a$10$...'  → заменить запись alice, затем docker compose up -d / systemctl restart rgstr
+# RGSTR_USERS='alice:$2a$10$...'  → replace the alice entry, then docker compose up -d / systemctl restart rgstr
 ```
 
-**Администратор, созданный в админке, и других администраторов нет.** Временно включите первого администратора с отдельным именем, войдите им и сбросьте пароль на странице «Users»:
+**Administrator created in the web admin, and there are no other administrators.** Temporarily enable a first administrator with a separate name, sign in as it, and reset the password on the "Users" page:
 
 ```bash
-# .env или /etc/rgstr/env
+# .env or /etc/rgstr/env
 RGSTR_ADMIN_USER=recovery
 RGSTR_ADMIN_PASSWORD=temporary-recovery-password
-docker compose up -d   # или sudo systemctl restart rgstr
+docker compose up -d   # or sudo systemctl restart rgstr
 ```
 
-1. Войдите в `/ui` как `recovery`, задайте ему постоянный пароль (админка попросит).
-2. «Users» → «Reset password» у забывшего пароль администратора, с галочкой «Require a password change at the first sign-in».
-3. Уберите `RGSTR_ADMIN_USER` и `RGSTR_ADMIN_PASSWORD` из env, выполните `docker compose up -d` / `systemctl restart rgstr`, войдите восстановленным администратором и удалите `recovery` на странице «Users».
+1. Sign in to `/ui` as `recovery` and set a permanent password for it (the web admin will ask).
+2. "Users" → "Reset password" for the administrator who forgot the password, with "Require a password change at the first sign-in" checked.
+3. Remove `RGSTR_ADMIN_USER` and `RGSTR_ADMIN_PASSWORD` from env, run `docker compose up -d` / `systemctl restart rgstr`, sign in as the recovered administrator and delete `recovery` on the "Users" page.
 
-Используйте для восстановления имя, которого нет среди пользователей: если имя совпадёт с пользователем, созданным в админке, env «перекроет» его, и этот пользователь будет удалён из `users.json`.
+For recovery, use a name that does not belong to any existing user: if the name matches a user created in the web admin, env "overrides" it, and that user is removed from `users.json`.
 
-**Если доступа к env нет, но есть к данным.** Пароли пользователей хранятся в `<RGSTR_STORAGE>/users.json` (bcrypt). Удаление записи пользователя из этого файла при остановленном реестре: для пользователя из env вернёт пароль из env, пользователя, созданного в админке, удалит целиком.
+**If you have no access to env, but have access to the data.** User passwords are stored in `<RGSTR_STORAGE>/users.json` (bcrypt). Removing a user's entry from this file while the registry is stopped restores the env password for a user from env, and deletes a user created in the web admin entirely.
 
-**Если после обновления «слетела» сессия и не подходит пароль.** Проверьте, не заменили ли вы `.env` (например, свежим `.env.example`):
-- изменился `RGSTR_AUTH_SECRET` — все сессии и `docker login` выходят, пароли при этом не меняются;
-- изменилось значение `RGSTR_ADMIN_PASSWORD` — пароль первого администратора сбрасывается на это значение (так задумано, это способ сброса): войдите им, админка попросит задать новый;
-- в rgstr до 1.5.0 пустой или удалённый `RGSTR_ADMIN_PASSWORD` удалял первого администратора — задайте временный пароль, как описано выше;
-- изменился том или путь данных (`RGSTR_STORAGE`, имя volume, имя проекта compose) — реестр запустился с пустыми данными: исчезнут и образы, и пароли.
+**If after an upgrade your session was lost and the password does not work.** Check whether you replaced `.env` (for example, with a fresh `.env.example`):
+- `RGSTR_AUTH_SECRET` changed — all sessions and `docker login`s are signed out; passwords are not affected;
+- the `RGSTR_ADMIN_PASSWORD` value changed — the first administrator's password is reset to this value (by design, this is the reset method): sign in with it, and the web admin asks you to set a new one;
+- in rgstr before 1.5.0, an empty or removed `RGSTR_ADMIN_PASSWORD` deleted the first administrator — set a temporary password as described above;
+- the data volume or path changed (`RGSTR_STORAGE`, volume name, compose project name) — the registry started with empty data: both images and passwords are gone.
 
-После сброса или смены пароля сессии веб-админки этого пользователя завершаются сразу; `docker login`, выполненные со старым паролем, действуют, пока не истечёт их токен (`RGSTR_TOKEN_TTL`, по умолчанию 1 час). Каждый сброс записывается в журнал действий.
+After a password reset or change, that user's web admin sessions end immediately; `docker login`s made with the old password stay valid until their token expires (`RGSTR_TOKEN_TTL`, 1 hour by default). Every reset is recorded in the audit log.
 
 ---
 
-## Аутентификация
+## Authentication
 
-По умолчанию реестр открытый (`RGSTR_AUTH_ENABLED=false`). Для включения auth:
+By default the registry is open (`RGSTR_AUTH_ENABLED=false`). To enable auth:
 
 ```bash
-# 1. Сгенерировать хеши паролей
+# 1. Generate password hashes
 ./mkpasswd alice secret1
 ./mkpasswd bob   secret2
 
-# 2. Запустить с auth (хеши — в одинарных кавычках)
+# 2. Run with auth (hashes in single quotes)
 RGSTR_AUTH_ENABLED=true \
 RGSTR_AUTH_SECRET=my-signing-secret \
 RGSTR_USERS='alice:$2a$10$...,bob:$2a$10$...' \
 ./rgstr
 ```
 
-Docker-клиент автоматически обнаружит токен-эндпоинт через `WWW-Authenticate` заголовок и запросит токен при `docker login`:
+The Docker client automatically discovers the token endpoint via the `WWW-Authenticate` header and requests a token on `docker login`:
 
 ```bash
 docker login localhost:5000
@@ -489,9 +491,9 @@ docker login localhost:5000
 # Password: secret1
 ```
 
-### Настройка Docker daemon для HTTP реестра
+### Configuring the Docker daemon for an HTTP registry
 
-Если реестр работает без TLS, добавьте в `/etc/docker/daemon.json`:
+If the registry runs without TLS, add to `/etc/docker/daemon.json`:
 
 ```json
 {
@@ -499,55 +501,55 @@ docker login localhost:5000
 }
 ```
 
-И перезапустите Docker: `sudo systemctl restart docker`.
+Then restart Docker: `sudo systemctl restart docker`.
 
 ---
 
-## LDAP, Active Directory и единый вход
+## LDAP, Active Directory and single sign-on
 
-Помимо локальных пользователей rgstr принимает пользователей каталога. Они
-появляются в списке пользователей при первом входе (источник «LDAP» или «SSO»),
-могут быть участниками проектов, а их роль берётся из групп каталога.
+Besides local users, rgstr accepts directory users. They
+appear in the user list at their first sign-in (source "LDAP" or "SSO"),
+can be project members, and their role is taken from directory groups.
 
-Правила для обоих способов:
+Rules for both methods:
 
-- **Локальные пользователи главнее.** Пользователь из env или созданный в админке
-  входит только со своим паролем; пользователь каталога с тем же именем не
-  войдёт. Первый администратор поэтому работает, даже если каталог недоступен.
-- **Имена хранятся в нижнем регистре**: `Alice` и `alice` — один пользователь.
-- **Роли по группам.** Если заданы `*_ADMIN_GROUPS` или `*_READONLY_GROUPS`,
-  роль при каждом входе берётся из групп: администратор, только чтение, иначе
-  `*_DEFAULT_ROLE`. Если не заданы — роль меняется в админке и сохраняется.
-- **Ограничение доступа.** `*_ALLOWED_GROUPS` пускает только участников этих
-  групп (и групп ролей).
-- Группа сравнивается без учёта регистра по полному имени/DN или по `CN` из DN:
-  `registry-admins` совпадает с `CN=registry-admins,OU=Groups,DC=corp`.
-- Пароль такого пользователя хранится в каталоге: сменить или сбросить его в
-  rgstr нельзя. Удаление в админке убирает пользователя и его сессии; при
-  следующем входе он появится снова — закрывайте доступ в каталоге или группами.
+- **Local users take precedence.** A user from env or created in the web admin
+  signs in only with their own password; a directory user with the same name
+  cannot sign in. This is why the first administrator works even if the directory is unavailable.
+- **Names are stored in lowercase**: `Alice` and `alice` are the same user.
+- **Roles from groups.** If `*_ADMIN_GROUPS` or `*_READONLY_GROUPS` are set,
+  the role is taken from groups at each sign-in: administrator, read-only, otherwise
+  `*_DEFAULT_ROLE`. If they are not set, the role is changed in the web admin and saved.
+- **Access restriction.** `*_ALLOWED_GROUPS` lets in only members of these
+  groups (and of the role groups).
+- A group is compared case-insensitively by full name/DN or by the `CN` from the DN:
+  `registry-admins` matches `CN=registry-admins,OU=Groups,DC=corp`.
+- Such a user's password is stored in the directory: it cannot be changed or reset in
+  rgstr. Deleting in the web admin removes the user and their sessions; at the
+  next sign-in they appear again — revoke access in the directory or via groups.
 
-### LDAP и Active Directory
+### LDAP and Active Directory
 
-docker login и вход в веб-админку принимают пароль из каталога. rgstr ищет
-запись пользователя (от имени служебной учётной записи или анонимно), затем
-проверяет пароль, подключаясь от имени найденной записи. Удачная проверка
-кешируется на минуту.
+docker login and web admin sign-in accept the directory password. rgstr looks up
+the user's entry (as a service account or anonymously), then
+verifies the password by binding as the found entry. A successful check
+is cached for a minute.
 
-| Переменная | По умолчанию | Описание |
+| Variable | Default | Description |
 |---|---|---|
-| `RGSTR_LDAP_URL` | — | `ldap://host:389` или `ldaps://host:636`. Пусто — LDAP выключен |
-| `RGSTR_LDAP_STARTTLS` | `false` | StartTLS поверх `ldap://` |
-| `RGSTR_LDAP_CA_FILE` | системные | CA-сертификат сервера (PEM) |
-| `RGSTR_LDAP_INSECURE_SKIP_VERIFY` | `false` | Не проверять сертификат (только для тестов) |
-| `RGSTR_LDAP_BIND_DN`, `RGSTR_LDAP_BIND_PASSWORD` | анонимно | Служебная учётная запись для поиска |
-| `RGSTR_LDAP_BASE_DN` | — | Где искать пользователей |
-| `RGSTR_LDAP_USER_FILTER` | `(&(objectClass=person)(uid=%s))` | Фильтр поиска; `%s` — имя (экранируется) |
-| `RGSTR_LDAP_GROUP_ATTR` | `memberOf` | Атрибут записи пользователя со списком групп |
-| `RGSTR_LDAP_GROUP_FILTER` | — | Поиск групп для каталогов без `memberOf`; `%s` — DN пользователя |
-| `RGSTR_LDAP_GROUP_BASE_DN` | `RGSTR_LDAP_BASE_DN` | Где искать группы |
-| `RGSTR_LDAP_ADMIN_GROUPS`, `RGSTR_LDAP_READONLY_GROUPS` | — | Группы ролей (через запятую) |
-| `RGSTR_LDAP_ALLOWED_GROUPS` | — | Кого вообще пускать |
-| `RGSTR_LDAP_DEFAULT_ROLE` | `user` | Роль без групп ролей: `user`, `readonly`, `admin` |
+| `RGSTR_LDAP_URL` | — | `ldap://host:389` or `ldaps://host:636`. Empty — LDAP disabled |
+| `RGSTR_LDAP_STARTTLS` | `false` | StartTLS over `ldap://` |
+| `RGSTR_LDAP_CA_FILE` | system | Server CA certificate (PEM) |
+| `RGSTR_LDAP_INSECURE_SKIP_VERIFY` | `false` | Do not verify the certificate (testing only) |
+| `RGSTR_LDAP_BIND_DN`, `RGSTR_LDAP_BIND_PASSWORD` | anonymous | Service account for searching |
+| `RGSTR_LDAP_BASE_DN` | — | Where to search for users |
+| `RGSTR_LDAP_USER_FILTER` | `(&(objectClass=person)(uid=%s))` | Search filter; `%s` — the name (escaped) |
+| `RGSTR_LDAP_GROUP_ATTR` | `memberOf` | User entry attribute with the list of groups |
+| `RGSTR_LDAP_GROUP_FILTER` | — | Group search for directories without `memberOf`; `%s` — the user's DN |
+| `RGSTR_LDAP_GROUP_BASE_DN` | `RGSTR_LDAP_BASE_DN` | Where to search for groups |
+| `RGSTR_LDAP_ADMIN_GROUPS`, `RGSTR_LDAP_READONLY_GROUPS` | — | Role groups (comma-separated) |
+| `RGSTR_LDAP_ALLOWED_GROUPS` | — | Who is allowed in at all |
+| `RGSTR_LDAP_DEFAULT_ROLE` | `user` | Role without role groups: `user`, `readonly`, `admin` |
 
 Active Directory:
 
@@ -561,7 +563,7 @@ RGSTR_LDAP_ADMIN_GROUPS=Registry-Admins
 RGSTR_LDAP_ALLOWED_GROUPS=Developers
 ```
 
-OpenLDAP без оверлея `memberOf`:
+OpenLDAP without the `memberOf` overlay:
 
 ```bash
 RGSTR_LDAP_URL=ldap://ldap.example:389
@@ -572,44 +574,44 @@ RGSTR_LDAP_GROUP_FILTER='(&(objectClass=groupOfNames)(member=%s))'
 RGSTR_LDAP_ADMIN_GROUPS=registry-admins
 ```
 
-### Единый вход (OIDC)
+### Single sign-on (OIDC)
 
-На странице входа появляется кнопка «Войти через …», которая ведёт к
-провайдеру OpenID Connect (Keycloak, Authentik, Dex, Entra ID, Google, GitLab).
-Поток — authorization code с PKCE; подпись ID-токена проверяется по ключам
-провайдера.
+The sign-in page gets a "Sign in with …" button that leads to
+an OpenID Connect provider (Keycloak, Authentik, Dex, Entra ID, Google, GitLab).
+The flow is authorization code with PKCE; the ID token signature is verified against the
+provider's keys.
 
-Docker не умеет входить через браузер, поэтому пользователь SSO создаёт в
-админке **CLI-секрет** (кнопка в шапке) и использует его как пароль:
+Docker cannot sign in through a browser, so an SSO user creates a
+**CLI secret** in the web admin (a button in the header) and uses it as the password:
 
 ```bash
 echo "$CLI_SECRET" | docker login registry.example.com -u dave --password-stdin
 ```
 
-Новый секрет отменяет предыдущий. Пользователи LDAP тоже могут сделать
-CLI-секрет, чтобы не хранить пароль каталога в CI.
+A new secret revokes the previous one. LDAP users can also create a
+CLI secret so as not to store their directory password in CI.
 
-| Переменная | По умолчанию | Описание |
+| Variable | Default | Description |
 |---|---|---|
-| `RGSTR_OIDC_ISSUER` | — | URL провайдера (issuer). Пусто — OIDC выключен |
-| `RGSTR_OIDC_CLIENT_ID`, `RGSTR_OIDC_CLIENT_SECRET` | — | Клиент у провайдера; без секрета — публичный клиент с PKCE |
-| `RGSTR_OIDC_REDIRECT_URL` | из `RGSTR_AUTH_REALM` | Адрес возврата: `https://<реестр>/ui/oidc/callback` |
-| `RGSTR_OIDC_SCOPES` | `openid profile email` | Запрашиваемые scope (добавьте `groups`, если провайдер так отдаёт группы) |
-| `RGSTR_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim с именем (без него — `email`) |
-| `RGSTR_OIDC_GROUPS_CLAIM` | `groups` | Claim с группами; если его нет в ID-токене, берётся из userinfo |
-| `RGSTR_OIDC_NAME` | `SSO` | Название на кнопке входа |
-| `RGSTR_OIDC_ADMIN_GROUPS`, `RGSTR_OIDC_READONLY_GROUPS`, `RGSTR_OIDC_ALLOWED_GROUPS`, `RGSTR_OIDC_DEFAULT_ROLE` | | Как у LDAP |
+| `RGSTR_OIDC_ISSUER` | — | Provider URL (issuer). Empty — OIDC disabled |
+| `RGSTR_OIDC_CLIENT_ID`, `RGSTR_OIDC_CLIENT_SECRET` | — | Client at the provider; without a secret — a public client with PKCE |
+| `RGSTR_OIDC_REDIRECT_URL` | from `RGSTR_AUTH_REALM` | Redirect URL: `https://<registry>/ui/oidc/callback` |
+| `RGSTR_OIDC_SCOPES` | `openid profile email` | Requested scopes (add `groups` if the provider returns groups that way) |
+| `RGSTR_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim with the username (if absent — `email`) |
+| `RGSTR_OIDC_GROUPS_CLAIM` | `groups` | Claim with groups; if it is not in the ID token, it is taken from userinfo |
+| `RGSTR_OIDC_NAME` | `SSO` | Name on the sign-in button |
+| `RGSTR_OIDC_ADMIN_GROUPS`, `RGSTR_OIDC_READONLY_GROUPS`, `RGSTR_OIDC_ALLOWED_GROUPS`, `RGSTR_OIDC_DEFAULT_ROLE` | | Same as for LDAP |
 
-Имя пользователя берётся из claim и связывает вход с его проектами, поэтому
-выбирайте claim, который пользователь не может поменять сам: в Keycloak
-запретите редактирование имени (*Edit username* выключен), у Google и Entra ID
-используйте `email` (неподтверждённый e-mail rgstr не примет) или
+The username is taken from the claim and links the sign-in to the user's projects, so
+choose a claim the user cannot change themselves: in Keycloak,
+disallow editing the username (*Edit username* off); with Google and Entra ID,
+use `email` (rgstr does not accept an unverified e-mail) or
 `RGSTR_OIDC_USERNAME_CLAIM=sub`.
 
-Keycloak: создайте клиента с типом *OpenID Connect*, включите *Client
-authentication*, в *Valid redirect URIs* укажите
-`https://registry.example.com/ui/oidc/callback`, добавьте маппер *Group
-Membership* с именем claim `groups` (выключите *Full group path*).
+Keycloak: create a client of type *OpenID Connect*, enable *Client
+authentication*, set *Valid redirect URIs* to
+`https://registry.example.com/ui/oidc/callback`, add a *Group
+Membership* mapper with the claim name `groups` (turn off *Full group path*).
 
 ```bash
 RGSTR_OIDC_ISSUER=https://sso.example.com/realms/main
@@ -619,56 +621,56 @@ RGSTR_OIDC_NAME=Keycloak
 RGSTR_OIDC_ADMIN_GROUPS=registry-admins
 ```
 
-## Кластер (HA)
+## Cluster (HA)
 
-Несколько процессов rgstr работают как один реестр: любой принимает push и
-pull, падение или обновление одного не останавливает ни push, ни pull.
+Several rgstr processes work as a single registry: any of them accepts push and
+pull, and the failure or upgrade of one stops neither push nor pull.
 
 ```
-          балансировщик / Kubernetes Service
+          load balancer / Kubernetes Service
         ┌──────────┼──────────┐
      rgstr-1    rgstr-2    rgstr-N
         └─────┬────┴─────┬────┘
         PostgreSQL       S3
 ```
 
-- **S3** хранит данные: blob'ы, манифесты, теги, незавершённые загрузки.
-  Загрузку частями (PATCH) может продолжить любой процесс: каждая часть и
-  состояние sha256 сохраняются сразу.
-- **PostgreSQL** хранит общее состояние: пользователей, проекты, роботов,
-  политики, webhooks, настройки, сессии веб-админки, журнал аудита, счётчики
-  pull. Изменения сразу видны всем процессам (`LISTEN/NOTIFY`).
-- **Сборка мусора** запускается в одном процессе на интервал и держит общую
-  блокировку: push, который делает данные достижимыми, её ждёт, так что GC
-  никогда не удалит слой образа, который сейчас пушат.
-- **Без состояния на диске:** процессы можно добавлять, убирать и
-  перезапускать в любой момент.
+- **S3** stores the data: blobs, manifests, tags, unfinished uploads.
+  A chunked upload (PATCH) can be continued by any process: each chunk and
+  the sha256 state are saved immediately.
+- **PostgreSQL** stores the shared state: users, projects, robots,
+  policies, webhooks, settings, web admin sessions, audit log, pull
+  counters. Changes are visible to all processes immediately (`LISTEN/NOTIFY`).
+- **Garbage collection** runs in one process per interval and holds a shared
+  lock: a push that makes data reachable waits for it, so GC
+  never removes a layer of an image that is being pushed right now.
+- **No state on disk:** processes can be added, removed and
+  restarted at any time.
 
-Проверено нагрузочным тестом (`test/ha`): три процесса под постоянными push и
-pull, каждые 1,5–3 с один из них убивается `kill -9` и перезапускается; все
-образы остаются целыми, ни один pull не отдаёт неверных данных.
+Verified with a load test (`test/ha`): three processes under constant push and
+pull; every 1.5–3 s one of them is killed with `kill -9` and restarted; all
+images remain intact, and no pull returns wrong data.
 
-| Переменная | По умолчанию | Описание |
+| Variable | Default | Description |
 |---|---|---|
-| `RGSTR_DATABASE_URL` | — | `postgres://user:pass@host:5432/rgstr?sslmode=require`; таблицы создаются сами |
-| `RGSTR_STORAGE_DRIVER` | `filesystem` (`s3`, если задан бакет) | Где хранить данные |
-| `RGSTR_STORAGE_S3_BUCKET` | — | Бакет (создайте заранее) |
-| `RGSTR_STORAGE_S3_PREFIX` | — | Префикс ключей, например `prod/` |
-| `RGSTR_STORAGE_S3_ENDPOINT` | AWS для региона | `https://storage.yandexcloud.net`, `http://minio:9000` … |
-| `RGSTR_STORAGE_S3_REGION` | `us-east-1` | Регион |
-| `RGSTR_STORAGE_S3_ACCESS_KEY`, `RGSTR_STORAGE_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Ключи |
-| `RGSTR_STORAGE_S3_PATH_STYLE` | `true` с endpoint | Адресация `host/бакет/ключ` |
-| `RGSTR_STORAGE_S3_REDIRECT` | `false` | Отдавать слои редиректом на presigned URL: клиенты качают прямо из S3, мимо rgstr. Endpoint должен быть доступен клиентам |
+| `RGSTR_DATABASE_URL` | — | `postgres://user:pass@host:5432/rgstr?sslmode=require`; tables are created automatically |
+| `RGSTR_STORAGE_DRIVER` | `filesystem` (`s3` if a bucket is set) | Where to store data |
+| `RGSTR_STORAGE_S3_BUCKET` | — | Bucket (create it beforehand) |
+| `RGSTR_STORAGE_S3_PREFIX` | — | Key prefix, for example `prod/` |
+| `RGSTR_STORAGE_S3_ENDPOINT` | AWS for the region | `https://storage.yandexcloud.net`, `http://minio:9000` … |
+| `RGSTR_STORAGE_S3_REGION` | `us-east-1` | Region |
+| `RGSTR_STORAGE_S3_ACCESS_KEY`, `RGSTR_STORAGE_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Keys |
+| `RGSTR_STORAGE_S3_PATH_STYLE` | `true` with endpoint | `host/bucket/key` addressing |
+| `RGSTR_STORAGE_S3_REDIRECT` | `false` | Serve layers via redirect to a presigned URL: clients download directly from S3, bypassing rgstr. The endpoint must be reachable by clients |
 
-Все процессы получают одинаковое окружение, включая `RGSTR_AUTH_SECRET`:
-токены, выданные одним, принимаются всеми. `/healthz` — живость процесса,
-`/readyz` — готовность (доступны база и хранилище); балансировщику нужен
+All processes get the same environment, including `RGSTR_AUTH_SECRET`:
+tokens issued by one are accepted by all. `/healthz` is process liveness,
+`/readyz` is readiness (the database and storage are reachable); the load balancer needs
 `/readyz`.
 
-Каталог данных на общем томе (NFS, CephFS) вместо S3 тоже работает:
-`RGSTR_STORAGE_DRIVER=filesystem` с `RGSTR_DATABASE_URL`.
+A data directory on a shared volume (NFS, CephFS) instead of S3 also works:
+`RGSTR_STORAGE_DRIVER=filesystem` with `RGSTR_DATABASE_URL`.
 
-**Переход с одиночного режима.** Остановите rgstr и перенесите данные:
+**Migrating from single-process mode.** Stop rgstr and migrate the data:
 
 ```bash
 RGSTR_DATABASE_URL=postgres://… RGSTR_STORAGE_S3_BUCKET=registry RGSTR_STORAGE_S3_ENDPOINT=… \
@@ -676,49 +678,49 @@ RGSTR_STORAGE_S3_ACCESS_KEY=… RGSTR_STORAGE_S3_SECRET_KEY=… \
   rgstr migrate -from /data
 ```
 
-Копируются blob'ы, манифесты, теги, пользователи, проекты, настройки, счётчики
-и журнал; повторный запуск докопирует недостающее. Время пуша тегов после
-переноса — время переноса (S3 не хранит исходное), это влияет на политики
-хранения по возрасту.
+Blobs, manifests, tags, users, projects, settings, counters
+and the audit log are copied; running it again copies whatever is missing. After
+migration, the push time of tags is the migration time (S3 does not keep the original), which affects
+age-based retention policies.
 
-**Бэкапы кластера** — средствами хранилищ: версионирование или репликация
-бакета и бэкапы PostgreSQL (pg_dump, pgBackRest, CloudNativePG). Встроенные
-бэкапы `RGSTR_BACKUP_*` работают только в одиночном режиме.
+**Cluster backups** — use the storage's own tools: bucket versioning or replication
+and PostgreSQL backups (pg_dump, pgBackRest, CloudNativePG). The built-in
+`RGSTR_BACKUP_*` backups work only in single-process mode.
 
-## Бэкапы
+## Backups
 
-rgstr сам делает бэкапы по расписанию: в S3-совместимое хранилище (AWS S3,
-MinIO, Ceph, SeaweedFS, Yandex Object Storage, Cloudflare R2 …) или в
-директорию (смонтированная NFS-шара, второй диск).
+rgstr takes backups on a schedule by itself: to S3-compatible storage (AWS S3,
+MinIO, Ceph, SeaweedFS, Yandex Object Storage, Cloudflare R2 …) or to a
+directory (a mounted NFS share, a second disk).
 
-- **Что входит:** всё содержимое `RGSTR_STORAGE` — образы, пользователи,
-  проекты, роботы, политики, настройки и журнал. Незавершённые загрузки не входят.
-- **Без остановки.** Бэкап делается на работающем реестре и получается
-  целостным: файлы заменяются атомарно, а архив пишет сначала метаданные и
-  манифесты, потом blob'ы; сборка мусора на время бэкапа ждёт.
-- **Формат:** обычный tar `rgstr-backup-<UTC дата-время>.tar` (слои образов
-  уже сжаты, сжимать ещё раз нет смысла). В S3 он уходит multipart-загрузкой по
-  частям, ни память, ни диск не держат бэкап целиком.
-- **Ротация:** после удачного бэкапа старые сверх `RGSTR_BACKUP_KEEP` удаляются.
-- Бэкап, пропущенный, пока rgstr был остановлен, делается сразу после запуска.
-- Состояние — в админке на странице «Бэкапы» (там же «Сделать бэкап сейчас»),
-  время последнего удачного — в `/healthz` (`last_backup`) и в метрике
-  `rgstr_backup_last_success_timestamp_seconds`. Удобно для алерта.
+- **What is included:** the entire contents of `RGSTR_STORAGE` — images, users,
+  projects, robots, policies, settings and the audit log. Unfinished uploads are not included.
+- **No downtime.** A backup is taken on a running registry and is
+  consistent: files are replaced atomically, and the archive writes metadata and
+  manifests first, then blobs; garbage collection waits while the backup runs.
+- **Format:** a plain tar `rgstr-backup-<UTC date-time>.tar` (image layers
+  are already compressed, there is no point in compressing them again). It is sent to S3 as a multipart upload in
+  parts; neither memory nor disk holds the whole backup.
+- **Rotation:** after a successful backup, old ones beyond `RGSTR_BACKUP_KEEP` are deleted.
+- A backup missed while rgstr was stopped is taken right after startup.
+- Status is shown in the web admin on the "Backups" page (which also has "Back up now"),
+  the time of the last successful one is in `/healthz` (`last_backup`) and in the
+  `rgstr_backup_last_success_timestamp_seconds` metric. Handy for alerting.
 
-| Переменная | По умолчанию | Описание |
+| Variable | Default | Description |
 |---|---|---|
-| `RGSTR_BACKUP_TARGET` | — | `s3://бакет/префикс` или директория (`/backups`, `file:///backups`). Пусто — бэкапы выключены |
-| `RGSTR_BACKUP_SCHEDULE` | `0 3 * * *` | Расписание cron (минута час день месяц день-недели), UTC |
-| `RGSTR_BACKUP_KEEP` | `7` | Сколько бэкапов хранить |
-| `RGSTR_BACKUP_S3_ENDPOINT` | AWS для региона | Адрес хранилища, например `https://storage.yandexcloud.net`, `http://minio:9000` |
-| `RGSTR_BACKUP_S3_REGION` | `us-east-1` | Регион (`AWS_REGION`) |
-| `RGSTR_BACKUP_S3_ACCESS_KEY`, `RGSTR_BACKUP_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Ключи доступа; `AWS_SESSION_TOKEN` тоже учитывается |
-| `RGSTR_BACKUP_S3_PATH_STYLE` | `true` с `RGSTR_BACKUP_S3_ENDPOINT` | Адресация `https://host/бакет/ключ` (MinIO, Ceph); иначе `https://бакет.host/ключ` |
+| `RGSTR_BACKUP_TARGET` | — | `s3://bucket/prefix` or a directory (`/backups`, `file:///backups`). Empty — backups disabled |
+| `RGSTR_BACKUP_SCHEDULE` | `0 3 * * *` | Cron schedule (minute hour day month day-of-week), UTC |
+| `RGSTR_BACKUP_KEEP` | `7` | How many backups to keep |
+| `RGSTR_BACKUP_S3_ENDPOINT` | AWS for the region | Storage address, for example `https://storage.yandexcloud.net`, `http://minio:9000` |
+| `RGSTR_BACKUP_S3_REGION` | `us-east-1` | Region (`AWS_REGION`) |
+| `RGSTR_BACKUP_S3_ACCESS_KEY`, `RGSTR_BACKUP_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Access keys; `AWS_SESSION_TOKEN` is also honored |
+| `RGSTR_BACKUP_S3_PATH_STYLE` | `true` with `RGSTR_BACKUP_S3_ENDPOINT` | `https://host/bucket/key` addressing (MinIO, Ceph); otherwise `https://bucket.host/key` |
 
-Ключам нужны права на чтение, запись, удаление и список объектов в префиксе.
-Бакет создайте заранее. Если нужна неизменяемость копий, включите в хранилище
-версионирование или object lock: rgstr удаляет только старые копии своего
-префикса.
+The keys need permission to read, write, delete and list objects in the prefix.
+Create the bucket beforehand. If you need immutable copies, enable
+versioning or object lock in the storage: rgstr deletes only old copies under its own
+prefix.
 
 ```bash
 RGSTR_BACKUP_TARGET=s3://my-backups/rgstr
@@ -728,15 +730,15 @@ RGSTR_BACKUP_S3_ACCESS_KEY=...
 RGSTR_BACKUP_S3_SECRET_KEY=...
 ```
 
-### Восстановление
+### Restore
 
-Остановите rgstr и запустите `rgstr restore` с тем же окружением:
+Stop rgstr and run `rgstr restore` with the same environment:
 
 ```bash
-rgstr backups                      # список
-rgstr restore latest               # самый свежий — в пустой RGSTR_STORAGE
+rgstr backups                      # list
+rgstr restore latest               # the newest one, into an empty RGSTR_STORAGE
 rgstr restore rgstr-backup-20261027-030000.tar
-rgstr restore -force latest        # поверх данных: текущие уйдут в .before-restore-<время>/
+rgstr restore -force latest        # over existing data: the current data is moved to .before-restore-<time>/
 
 # Docker Compose
 docker compose stop rgstr
@@ -744,16 +746,16 @@ docker compose run --rm rgstr restore -force latest
 docker compose start rgstr
 ```
 
-Пока rgstr работает, `restore` откажется (данные заблокированы). При распаковке
-содержимое каждого blob'а сверяется с его digest: повреждённый архив не
-затронет текущие данные. После проверки удалите `.before-restore-*`.
+While rgstr is running, `restore` refuses (the data is locked). During extraction,
+the content of each blob is checked against its digest: a corrupted archive does not
+affect the current data. After verifying, delete `.before-restore-*`.
 
-Для разового бэкапа остановленного реестра есть `rgstr backup`; у работающего —
-кнопка в админке или `POST /ui/api/backup/run` с токеном администратора.
+For a one-off backup of a stopped registry there is `rgstr backup`; for a running one,
+the button in the web admin or `POST /ui/api/backup/run` with an administrator token.
 
 ## TLS
 
-Передайте пути к сертификату и ключу — сервер автоматически переключится на HTTPS:
+Pass the certificate and key paths — the server switches to HTTPS automatically:
 
 ```bash
 RGSTR_TLS_CERT=/etc/letsencrypt/live/registry.example.com/fullchain.pem \
@@ -761,36 +763,36 @@ RGSTR_TLS_KEY=/etc/letsencrypt/live/registry.example.com/privkey.pem \
 ./rgstr
 ```
 
-Или используйте nginx/Caddy/HAProxy как TLS-терминатор перед реестром.
+Or use nginx/Caddy/HAProxy as a TLS terminator in front of the registry.
 
 ---
 
-## Метрики
+## Metrics
 
-С `RGSTR_METRICS_ENABLED=true` реестр отдаёт метрики в формате Prometheus на `GET /metrics` (без авторизации — открывайте только внутри сети мониторинга или закройте путь на reverse proxy):
+With `RGSTR_METRICS_ENABLED=true` the registry serves metrics in Prometheus format on `GET /metrics` (without authentication — expose it only inside the monitoring network or block the path on the reverse proxy):
 
-| Метрика | Тип | Что это |
+| Metric | Type | Meaning |
 |---|---|---|
-| `rgstr_build_info{version}` | gauge | версия |
-| `rgstr_http_requests_total{method,code}` | counter | HTTP-запросы |
-| `rgstr_events_total{action}` | counter | события журнала: `push`, `pull`, `delete_tag`, `login`, `login_failed`, `gc_run`, … |
-| `rgstr_gc_runs_total{result}`, `rgstr_gc_freed_bytes_total` | counter | запуски GC и освобождённое место |
-| `rgstr_gc_last_run_timestamp_seconds` | gauge | время последнего GC |
-| `rgstr_repositories`, `rgstr_storage_bytes`, `rgstr_uploads_in_progress` | gauge | репозитории, данные на диске (пересчёт раз в минуту), незавершённые загрузки |
-| `rgstr_disk_total_bytes`, `rgstr_disk_free_bytes` | gauge | размер и свободное место тома с данными |
+| `rgstr_build_info{version}` | gauge | version |
+| `rgstr_http_requests_total{method,code}` | counter | HTTP requests |
+| `rgstr_events_total{action}` | counter | audit log events: `push`, `pull`, `delete_tag`, `login`, `login_failed`, `gc_run`, … |
+| `rgstr_gc_runs_total{result}`, `rgstr_gc_freed_bytes_total` | counter | GC runs and freed space |
+| `rgstr_gc_last_run_timestamp_seconds` | gauge | time of the last GC |
+| `rgstr_repositories`, `rgstr_storage_bytes`, `rgstr_uploads_in_progress` | gauge | repositories, data on disk (recalculated once a minute), unfinished uploads |
+| `rgstr_disk_total_bytes`, `rgstr_disk_free_bytes` | gauge | size and free space of the data volume |
 
-Пример алерта: `rgstr_disk_free_bytes / rgstr_disk_total_bytes < 0.1`, всплеск `rate(rgstr_events_total{action="login_failed"}[5m])`.
+Alert examples: `rgstr_disk_free_bytes / rgstr_disk_total_bytes < 0.1`, a spike in `rate(rgstr_events_total{action="login_failed"}[5m])`.
 
 ## fail2ban
 
-Неудачные входы (`docker login`, веб-админка, неверный текущий пароль при смене) пишутся в `<RGSTR_STORAGE>/audit.log` с IP клиента. В `deploy/fail2ban/` лежат фильтр и jail: 5 неудачных попыток за 10 минут — бан на час.
+Failed sign-ins (`docker login`, web admin, wrong current password on password change) are written to `<RGSTR_STORAGE>/audit.log` with the client IP. `deploy/fail2ban/` contains a filter and a jail: 5 failed attempts in 10 minutes — a one-hour ban.
 
-Фильтр `/etc/fail2ban/filter.d/rgstr.conf`:
+Filter `/etc/fail2ban/filter.d/rgstr.conf`:
 
 ```ini
 [Definition]
-# fail2ban вырезает найденную дату ({"time":"2026-10-08T10:44:00) из строки
-# до проверки failregex, поэтому выражение начинается с долей секунды.
+# fail2ban cuts the matched date ({"time":"2026-10-08T10:44:00) out of the line
+# before checking failregex, so the expression starts with the fractional seconds.
 failregex = ^(?:\.\d+)?Z","user":"(?:[^"\\]|\\.)*","ip":"<HOST>","action":"login_failed"
 ignoreregex =
 datepattern = ^\{"time":"%%Y-%%m-%%dT%%H:%%M:%%S
@@ -803,7 +805,7 @@ Jail `/etc/fail2ban/jail.d/rgstr.local`:
 enabled     = true
 filter      = rgstr
 logpath     = /var/lib/rgstr/audit.log
-# Docker Compose с volume rgstr-data:
+# Docker Compose with the rgstr-data volume:
 # logpath   = /var/lib/docker/volumes/rgstr-data/_data/audit.log
 logtimezone = UTC
 backend     = polling
@@ -811,64 +813,64 @@ maxretry    = 5
 findtime    = 10m
 bantime     = 1h
 port        = 5000,http,https
-# rgstr в Docker с опубликованным портом:
+# rgstr in Docker with a published port:
 # banaction = iptables-multiport[chain="DOCKER-USER"]
 ```
 
-Установка из репозитория (или из архива релиза):
+Installation from the repository (or from the release archive):
 
 ```bash
 sudo cp deploy/fail2ban/filter.d/rgstr.conf /etc/fail2ban/filter.d/
 sudo cp deploy/fail2ban/jail.d/rgstr.local  /etc/fail2ban/jail.d/
-sudo nano /etc/fail2ban/jail.d/rgstr.local   # logpath, порты, banaction для Docker
-sudo fail2ban-regex /var/lib/rgstr/audit.log /etc/fail2ban/filter.d/rgstr.conf   # проверка
+sudo nano /etc/fail2ban/jail.d/rgstr.local   # logpath, ports, banaction for Docker
+sudo fail2ban-regex /var/lib/rgstr/audit.log /etc/fail2ban/filter.d/rgstr.conf   # check
 sudo systemctl reload fail2ban
 sudo fail2ban-client status rgstr
 ```
 
-- **`logpath`:** `/var/lib/rgstr/audit.log` при установке через `deploy/install.sh`; для Docker Compose с volume `rgstr-data` — `/var/lib/docker/volumes/rgstr-data/_data/audit.log` (или путь bind-mount, если вы смонтировали `./data`).
-- **Docker с опубликованным портом:** трафик к контейнеру идёт через NAT Docker мимо цепочки `INPUT`, поэтому баните в `DOCKER-USER`: раскомментируйте в jail строку `banaction = iptables-multiport[chain="DOCKER-USER"]`. Если перед реестром стоит nginx на хосте, обычный `banaction` подходит.
-- **Реальный IP за прокси.** rgstr берёт IP из `X-Forwarded-For`, только если запрос пришёл от доверенного прокси (`RGSTR_TRUSTED_PROXIES`, по умолчанию loopback и частные сети), и берёт в цепочке крайний правый недоверенный адрес — клиент не может подставить чужой IP, отправив заголовок сам. nginx из `nginx.conf` передаёт заголовок правильно. Если реестр доступен напрямую из сети, где есть недоверенные клиенты с частными адресами, задайте `RGSTR_TRUSTED_PROXIES=none` или конкретный адрес прокси.
-- Имя пользователя в журнале задаёт клиент, но оно экранировано в JSON, и фильтр не даёт подставить через него поддельный IP.
+- **`logpath`:** `/var/lib/rgstr/audit.log` when installed via `deploy/install.sh`; for Docker Compose with the `rgstr-data` volume — `/var/lib/docker/volumes/rgstr-data/_data/audit.log` (or the bind-mount path if you mounted `./data`).
+- **Docker with a published port:** traffic to the container goes through Docker NAT, bypassing the `INPUT` chain, so ban in `DOCKER-USER`: uncomment the `banaction = iptables-multiport[chain="DOCKER-USER"]` line in the jail. If nginx on the host sits in front of the registry, the regular `banaction` works.
+- **Real IP behind a proxy.** rgstr takes the IP from `X-Forwarded-For` only if the request came from a trusted proxy (`RGSTR_TRUSTED_PROXIES`, loopback and private networks by default), and takes the rightmost untrusted address in the chain — a client cannot substitute someone else's IP by sending the header itself. nginx from `nginx.conf` passes the header correctly. If the registry is directly reachable from a network with untrusted clients on private addresses, set `RGSTR_TRUSTED_PROXIES=none` or the specific proxy address.
+- The username in the log is supplied by the client, but it is JSON-escaped, and the filter does not allow injecting a fake IP through it.
 
 ## Reverse proxy
 
-### nginx — системный (порты 80/443 уже заняты)
+### nginx on the host (ports 80/443 already in use)
 
-Если на хосте уже работает nginx, не нужно поднимать контейнерный. Скопируйте шаблон из репозитория и подключите его:
+If nginx is already running on the host, there is no need to start a containerized one. Copy the template from the repository and enable it:
 
 ```bash
 sudo cp nginx.conf /etc/nginx/conf.d/rgstr.conf
-# Замените registry.example.com на свой домен
+# Replace registry.example.com with your domain
 sudo nano /etc/nginx/conf.d/rgstr.conf
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-В docker-compose.yml оставьте секцию nginx закомментированной, rgstr слушает на `localhost:5000`.
+In docker-compose.yml, leave the nginx section commented out; rgstr listens on `localhost:5000`.
 
-### nginx — контейнерный (docker compose)
+### nginx in a container (docker compose)
 
-Раскомментируйте секцию `nginx` в `docker-compose.yml`. Подходит когда на хосте нет другого веб-сервера и порты 80/443 свободны.
+Uncomment the `nginx` section in `docker-compose.yml`. Suitable when there is no other web server on the host and ports 80/443 are free.
 
 ### HAProxy
 
-Альтернатива nginx — подходит если HAProxy уже используется как единая точка входа для нескольких сервисов.
+An alternative to nginx — suitable if HAProxy is already used as a single entry point for several services.
 
-Пример конфигурации (`/etc/haproxy/haproxy.cfg`):
+Example configuration (`/etc/haproxy/haproxy.cfg`):
 
 ```
 frontend https_in
     bind *:443 ssl crt /etc/letsencrypt/live/registry.example.com/fullchain.pem
     default_backend rgstr
 
-    # HTTP → HTTPS редирект
+    # HTTP → HTTPS redirect
     bind *:80
     redirect scheme https if !{ ssl_fc }
 
 backend rgstr
     option forwardfor
     http-request set-header X-Forwarded-Proto https
-    # Отключить буферизацию для больших образов
+    # Disable buffering for large images
     option http-server-close
     server rgstr 127.0.0.1:5000 check
 ```
@@ -878,169 +880,169 @@ sudo haproxy -c -f /etc/haproxy/haproxy.cfg
 sudo systemctl reload haproxy
 ```
 
-> HAProxy передаёт TLS-трафик напрямую бэкенду без буферизации, что удобно для больших образов.
+> HAProxy passes TLS traffic directly to the backend without buffering, which is convenient for large images.
 
 ---
 
-## Развёртывание на Linux
+## Deploying on Linux
 
 ### Systemd (production)
 
 ```bash
-# Бинарник из релиза (см. «Быстрый старт → бинарник») или собранный локально:
+# A binary from a release (see "Quick start → binary") or built locally:
 #   make build-linux   → ./rgstr-linux-amd64
 sudo ./deploy/install.sh ./rgstr
 ```
 
-Скрипт создаёт:
-- системного пользователя `rgstr`
-- директорию `/var/lib/rgstr` для хранилища
-- конфигурационный файл `/etc/rgstr/env` для секретов (переменные из него переопределяют значения в unit-файле)
-- systemd unit с hardening-настройками
+The script creates:
+- a system user `rgstr`
+- the `/var/lib/rgstr` directory for storage
+- the `/etc/rgstr/env` configuration file for secrets (its variables override the values in the unit file)
+- a systemd unit with hardening settings
 
-Управление сервисом:
+Managing the service:
 ```bash
 sudo systemctl status  rgstr
 sudo systemctl restart rgstr
 sudo journalctl -u rgstr -f
 ```
 
-### Кросс-компиляция
+### Cross-compilation
 
 ```bash
 make build-linux        # Linux amd64
 make build-linux-arm64  # Linux arm64 (Graviton, Raspberry Pi)
 make build-windows      # Windows amd64
-make release            # Все платформы сразу
+make release            # All platforms at once
 ```
 
 ---
 
 ## API
 
-Все эндпоинты соответствуют [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md).
+All endpoints conform to the [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md).
 
-| Метод | Путь | Описание |
+| Method | Path | Description |
 |---|---|---|
-| `GET` | `/v2/` | Проверка версии API |
-| `GET` | `/healthz` | Health check и версия (без аутентификации) |
-| `GET` | `/readyz` | Готовность: доступны хранилище и (в кластере) база; `503`, если нет. Для балансировщика (без аутентификации) |
-| `GET` | `/ui` | Веб-интерфейс |
-| `GET` | `/stats` | Статистика репозиториев и pulls |
-| `GET`, `POST` | `/v2/auth` | Получение Bearer токена (GET с query или POST-форма OAuth2, как у containerd) |
-| `GET` | `/v2/_catalog` | Список репозиториев |
-| `GET` | `/v2/<name>/tags/list` | Список тегов |
-| `HEAD` | `/v2/<name>/manifests/<ref>` | Проверка существования манифеста |
-| `GET` | `/v2/<name>/manifests/<ref>` | Получение манифеста |
-| `PUT` | `/v2/<name>/manifests/<ref>` | Загрузка манифеста |
-| `DELETE` | `/v2/<name>/manifests/<ref>` | Удаление: по тегу — только этот тег, по digest — манифест и все теги на него |
-| `HEAD` | `/v2/<name>/blobs/<digest>` | Проверка существования blob'а |
-| `GET` | `/v2/<name>/blobs/<digest>` | Скачивание blob'а (с поддержкой Range) |
-| `DELETE` | `/v2/<name>/blobs/<digest>` | Отвязка blob'а от репозитория; данные удаляет GC, когда они не нужны ни одному образу с тегом |
-| `POST` | `/v2/<name>/blobs/uploads/` | Начало загрузки |
-| `GET` | `/v2/<name>/blobs/uploads/<uuid>` | Статус загрузки |
-| `PATCH` | `/v2/<name>/blobs/uploads/<uuid>` | Загрузка чанка |
-| `PUT` | `/v2/<name>/blobs/uploads/<uuid>` | Завершение загрузки |
-| `DELETE` | `/v2/<name>/blobs/uploads/<uuid>` | Отмена загрузки |
+| `GET` | `/v2/` | API version check |
+| `GET` | `/healthz` | Health check and version (no authentication) |
+| `GET` | `/readyz` | Readiness: storage and (in the cluster) the database are reachable; `503` if not. For the load balancer (no authentication) |
+| `GET` | `/ui` | Web UI |
+| `GET` | `/stats` | Repository and pull statistics |
+| `GET`, `POST` | `/v2/auth` | Get a Bearer token (GET with query or OAuth2 POST form, as containerd does) |
+| `GET` | `/v2/_catalog` | List repositories |
+| `GET` | `/v2/<name>/tags/list` | List tags |
+| `HEAD` | `/v2/<name>/manifests/<ref>` | Check whether a manifest exists |
+| `GET` | `/v2/<name>/manifests/<ref>` | Get a manifest |
+| `PUT` | `/v2/<name>/manifests/<ref>` | Upload a manifest |
+| `DELETE` | `/v2/<name>/manifests/<ref>` | Delete: by tag — only that tag, by digest — the manifest and all tags pointing to it |
+| `HEAD` | `/v2/<name>/blobs/<digest>` | Check whether a blob exists |
+| `GET` | `/v2/<name>/blobs/<digest>` | Download a blob (with Range support) |
+| `DELETE` | `/v2/<name>/blobs/<digest>` | Unlink a blob from the repository; GC removes the data once no tagged image needs it |
+| `POST` | `/v2/<name>/blobs/uploads/` | Start an upload |
+| `GET` | `/v2/<name>/blobs/uploads/<uuid>` | Upload status |
+| `PATCH` | `/v2/<name>/blobs/uploads/<uuid>` | Upload a chunk |
+| `PUT` | `/v2/<name>/blobs/uploads/<uuid>` | Complete an upload |
+| `DELETE` | `/v2/<name>/blobs/uploads/<uuid>` | Cancel an upload |
 
-Параметры `?n=<int>&last=<string>` поддерживаются для пагинации в `/v2/_catalog` и `/v2/<name>/tags/list`.
+The `?n=<int>&last=<string>` parameters are supported for pagination in `/v2/_catalog` and `/v2/<name>/tags/list`.
 
 ### GET /ui
 
-Веб-интерфейс реестра. Открывается в браузере:
+The registry web UI. Open it in a browser:
 
 ```
 https://registry.example.com/ui
 ```
 
-Возможности:
-- Версия реестра — внизу каждой страницы и на форме входа (а также в ответе `/healthz`: `{"status":"ok","version":"v1.9.1"}`)
-- Русский и английский интерфейс: язык берётся из браузера, переключается в шапке и на форме входа и запоминается
-- Смена пароля (кнопка «Change password» в шапке) для любого пользователя. Новый пароль хранится в виде bcrypt-хеша в `<RGSTR_STORAGE>/users.json` и действует и для `docker login`
-- Вход теми же пользователями, что и для `docker login`. Форма входа отправляется обычным образом (`POST /ui/login`), поэтому браузер предлагает сохранить логин и пароль, а после смены пароля — обновить его. В браузере хранится только токен сессии, пароль — нет
-- Сессия общая для всех вкладок и переживает перезапуск браузера; живёт `RGSTR_SESSION_TTL` (12 часов) и продлевается, пока админка открыта. Выход завершает сессию на сервере (её токен больше не действует) и во всех вкладках. Смена или сброс пароля завершает остальные сессии пользователя
-- При `RGSTR_AUTH_ENABLED=false` форма входа не показывается
-- Статистика: количество репозиториев и pulls
-- Список репозиториев с тегами: digest, размер, платформы. Для мультиархитектурных образов показываются все платформы с размером каждой, attestation-манифесты пропускаются
-- Поиск репозиториев (без учёта регистра)
-- Удаление (кнопки видны только пользователям с правом удаления):
-  - **тега** — удаляется только этот тег, другие теги того же образа остаются;
-  - **нескольких тегов** — флажки у тегов и «Delete selected»;
-  - **образа** — образ и все теги, указывающие на него;
-  - **репозитория** — все теги репозитория; для подтверждения нужно ввести его имя. Вложенные репозитории (`team/app` при удалении `team`) не затрагиваются.
+Features:
+- Registry version — at the bottom of every page and on the sign-in form (and in the `/healthz` response: `{"status":"ok","version":"v1.9.1"}`)
+- Russian and English UI: the language is taken from the browser, can be switched in the header and on the sign-in form, and is remembered
+- Password change (the "Change password" button in the header) for any user. The new password is stored as a bcrypt hash in `<RGSTR_STORAGE>/users.json` and also applies to `docker login`
+- Sign in with the same users as for `docker login`. The sign-in form is submitted the regular way (`POST /ui/login`), so the browser offers to save the username and password, and after a password change, to update it. Only the session token is stored in the browser, not the password
+- The session is shared by all tabs and survives a browser restart; it lives for `RGSTR_SESSION_TTL` (12 hours) and is extended while the web admin is open. Signing out ends the session on the server (its token no longer works) and in all tabs. A password change or reset ends the user's other sessions
+- With `RGSTR_AUTH_ENABLED=false` the sign-in form is not shown
+- Statistics: number of repositories and pulls
+- List of repositories with tags: digest, size, platforms. For multi-arch images all platforms are shown with the size of each; attestation manifests are skipped
+- Repository search (case-insensitive)
+- Deletion (buttons are visible only to users with delete permission):
+  - **a tag** — only this tag is deleted, other tags of the same image remain;
+  - **several tags** — checkboxes on tags and "Delete selected";
+  - **an image** — the image and all tags pointing to it;
+  - **a repository** — all tags of the repository; to confirm, you must type its name. Nested repositories (`team/app` when deleting `team`) are not affected.
 
-  Удаление сразу убирает теги и манифесты — образ больше нельзя скачать, — а место на диске освобождает сборка мусора (GC). Администратор может отметить в подтверждении «Сразу освободить место»: тогда GC запускается сразу только для удаляемых данных (льготный период снимается только с них, загрузки, идущие в этот момент, не затрагиваются), и в уведомлении видно, сколько освобождено. Без этой галочки место освободит следующий плановый GC; данные, запушенные в пределах льготного периода (`RGSTR_UPLOAD_TTL`), — после его окончания
-- Имя репозитория можно выделить и скопировать; кнопка «Copy» копирует полный путь `host/repo`. Копирование работает и без HTTPS
-- Диск (для администраторов): на странице репозиториев — свободно из всего и сколько занимают данные реестра; на странице сборки мусора — ещё сколько освободит следующий GC, сколько освободится после льготного периода, и список удалённого, что ждёт GC (репозиторий / тег / образ, кто и когда удалил, размер). При свободном месте меньше 10% у администраторов на всех страницах показывается предупреждение
-- Сборка мусора (страница «Garbage collection», только для администраторов):
-  - расписание: выключено, раз в 1/6/12/24 часа, раз в неделю или своё значение. Сохраняется в `/data/meta.json`, действует сразу, без перезапуска, и имеет приоритет над `RGSTR_GC_INTERVAL`; кнопка возвращает значение из env;
-  - запуск вручную, в том числе пробный (dry run) — показывает, что и сколько места будет освобождено, ничего не удаляя;
-  - режим «без льготного периода» — сразу освобождает место от только что удалённого, но может сломать push, идущий в этот момент;
-  - история последних 30 запусков: кто запустил, сколько освобождено, место каких удалённых репозиториев, тегов и образов освобождено, какие образы без тегов удалены
-- Политики (страница «Policies», только для администраторов):
-  - **хранение тегов** — правило задаёт шаблон репозиториев (`team/**`), шаблон тегов (`*`, `dev-*`) и что оставить: N последних по времени push и/или запушенные за последние N дней. Тег удаляется, только если его не оставляет ни одно подходящее правило. Правила применяются перед каждым плановым GC, вручную или пробным запуском, история запусков сохраняется. Если плановый GC выключен, правила применяются только вручную;
-  - **неизменяемые теги** — подходящий тег нельзя перезаписать другим образом и нельзя удалить: ни `docker push` (ошибка `tag is immutable`), ни через админку, ни политикой хранения. Новый тег по шаблону запушить можно. Такие теги помечены 🔒 в списке репозиториев
-- Карточка образа — клик по тегу: команды `docker pull` по тегу и по digest с кнопкой копирования, все теги образа, размер; для мультиархитектурных образов — переключение платформ; конфигурация (entrypoint, cmd, рабочая папка, пользователь, порты, тома, переменные окружения, labels); шаги сборки с командами `RUN`/`COPY`/… и размером каждого слоя; исходный манифест
-- Журнал действий (страница «Audit log», только для администраторов): кто, когда и с какого IP сделал push, pull (скачал манифест), удалил тег, образ или репозиторий, вошёл в админку, ошибся паролем (в админке или при `docker login`), сменил пароль, изменил пользователей, политики или расписание GC, запустил GC или политики хранения (плановые запуски — от имени `system`). Фильтры по пользователю, действию и тексту. Хранится в `<RGSTR_STORAGE>/audit.log` (JSON по строке на событие); при 10 МБ файл переименовывается в `audit.log.1`, поэтому на диске не больше ~20 МБ журнала
+  Deletion removes tags and manifests immediately — the image can no longer be pulled — while disk space is freed by garbage collection (GC). An administrator can check "Free the disk space now" in the confirmation: GC then runs right away only for the deleted data (the grace period is lifted only for it; uploads in progress at that moment are not affected), and the notification shows how much was freed. Without this checkbox, the space is freed by the next scheduled GC; data pushed within the grace period (`RGSTR_UPLOAD_TTL`) — after it ends
+- The repository name can be selected and copied; the "Copy" button copies the full `host/repo` path. Copying works without HTTPS too
+- Disk (for administrators): on the repositories page — free space out of the total and how much the registry data takes; on the garbage collection page — also how much the next GC will free, how much will be freed after the grace period, and the list of deleted items awaiting GC (repository / tag / image, who deleted it and when, size). When free space is below 10%, administrators see a warning on all pages
+- Garbage collection (the "Garbage collection" page, administrators only):
+  - schedule: off, every 1/6/12/24 hours, weekly, or a custom value. Saved in `/data/meta.json`, takes effect immediately without a restart, and takes precedence over `RGSTR_GC_INTERVAL`; a button restores the value from env;
+  - manual run, including a dry run — shows what will be freed and how much space, without deleting anything;
+  - "no grace period" mode — immediately frees space from just-deleted data, but can break a push in progress at that moment;
+  - history of the last 30 runs: who started it, how much was freed, the space of which deleted repositories, tags and images was freed, which untagged images were removed
+- Policies (the "Policies" page, administrators only):
+  - **tag retention** — a rule sets a repository pattern (`team/**`), a tag pattern (`*`, `dev-*`) and what to keep: the N most recent by push time and/or those pushed in the last N days. A tag is deleted only if no matching rule keeps it. Rules are applied before each scheduled GC, manually, or as a dry run; run history is kept. If scheduled GC is off, rules are applied only manually;
+  - **immutable tags** — a matching tag cannot be overwritten with another image and cannot be deleted: not by `docker push` (error `tag is immutable`), not through the web admin, not by a retention policy. A new tag matching the pattern can be pushed. Such tags are marked 🔒 in the repository list
+- Image details — click a tag: `docker pull` commands by tag and by digest with a copy button, all tags of the image, size; for multi-arch images — platform switching; configuration (entrypoint, cmd, working directory, user, ports, volumes, environment variables, labels); build steps with `RUN`/`COPY`/… commands and the size of each layer; the raw manifest
+- Audit log (the "Audit log" page, administrators only): who, when and from which IP pushed, pulled (downloaded a manifest), deleted a tag, image or repository, signed in to the web admin, entered a wrong password (in the web admin or on `docker login`), changed a password, changed users, policies or the GC schedule, ran GC or retention policies (scheduled runs are attributed to `system`). Filters by user, action and text. Stored in `<RGSTR_STORAGE>/audit.log` (one JSON line per event); at 10 MB the file is renamed to `audit.log.1`, so there is no more than ~20 MB of log on disk
 
-Без TLS логин и пароль при входе передаются открытым текстом — для доступа извне настройте [TLS](#tls) или reverse proxy.
+Without TLS, the username and password are sent in plain text at sign-in — for external access, set up [TLS](#tls) or a reverse proxy.
 
-Данные интерфейс получает одним запросом:
+The UI gets its data in a single request:
 
-| Метод | Путь | Описание |
+| Method | Path | Description |
 |---|---|---|
-| `GET` | `/ui/api/me` | Включена ли авторизация, текущий пользователь и его права |
-| `POST` | `/ui/api/login` | `{"username","password"}` → `{"token","user","admin"}` (для скриптов) |
-| `POST` | `/ui/login`, `/ui/password` | Формы входа и смены пароля веб-админки (перенаправляют обратно на `/ui`) |
-| `GET` | `/ui/api/repos` | Репозитории с тегами, digest, размерами, платформами и временем push |
-| `POST` | `/ui/api/tags/delete` | `{"repo","tags":[…],"free_space"}` — удалить теги, результат по каждому |
-| `POST` | `/ui/api/images/delete` | `{"repo","digest","free_space"}` — удалить образ со всеми тегами |
-| `POST` | `/ui/api/repos/delete` | `{"repo","free_space"}` — удалить репозиторий |
-| `GET` | `/ui/api/disk` | Место на диске (администратор); `?data=1` — и размер данных реестра; `?details=1` — и оценка GC и список ожидающего |
-| `GET` | `/ui/api/gc` | Расписание GC и история запусков (администратор) |
-| `POST` | `/ui/api/gc/run` | `{"dry_run","ignore_grace"}` — запустить GC (администратор) |
-| `GET` | `/ui/api/backup` | Настройки, состояние и список бэкапов (администратор) |
-| `POST` | `/ui/api/backup/run` | Запустить бэкап сейчас, ответ `202` (администратор) |
-| `POST` | `/ui/api/cli-secret` | Новый CLI-секрет для docker login (пользователи LDAP и SSO) |
-| `GET` | `/ui/api/policies` | Правила хранения и неизменяемости, история применения (администратор) |
-| `POST` | `/ui/api/policies/retention` | `{"rules":[{"repos","tags","keep_last","keep_days","disabled"}]}` — заменить правила хранения |
-| `POST` | `/ui/api/policies/retention/run` | `{"dry_run"}` — применить правила хранения сейчас |
-| `POST` | `/ui/api/policies/immutable` | `{"rules":[{"repos","tags","disabled"}]}` — заменить правила неизменяемости |
-| `GET` | `/ui/api/users` | Пользователи (администратор) |
+| `GET` | `/ui/api/me` | Whether authentication is enabled, the current user and their permissions |
+| `POST` | `/ui/api/login` | `{"username","password"}` → `{"token","user","admin"}` (for scripts) |
+| `POST` | `/ui/login`, `/ui/password` | Web admin sign-in and password change forms (redirect back to `/ui`) |
+| `GET` | `/ui/api/repos` | Repositories with tags, digests, sizes, platforms and push time |
+| `POST` | `/ui/api/tags/delete` | `{"repo","tags":[…],"free_space"}` — delete tags, result per tag |
+| `POST` | `/ui/api/images/delete` | `{"repo","digest","free_space"}` — delete an image with all its tags |
+| `POST` | `/ui/api/repos/delete` | `{"repo","free_space"}` — delete a repository |
+| `GET` | `/ui/api/disk` | Disk space (administrator); `?data=1` — also the registry data size; `?details=1` — also the GC estimate and the pending list |
+| `GET` | `/ui/api/gc` | GC schedule and run history (administrator) |
+| `POST` | `/ui/api/gc/run` | `{"dry_run","ignore_grace"}` — run GC (administrator) |
+| `GET` | `/ui/api/backup` | Backup settings, status and list (administrator) |
+| `POST` | `/ui/api/backup/run` | Start a backup now, responds `202` (administrator) |
+| `POST` | `/ui/api/cli-secret` | New CLI secret for docker login (LDAP and SSO users) |
+| `GET` | `/ui/api/policies` | Retention and immutability rules, run history (administrator) |
+| `POST` | `/ui/api/policies/retention` | `{"rules":[{"repos","tags","keep_last","keep_days","disabled"}]}` — replace retention rules |
+| `POST` | `/ui/api/policies/retention/run` | `{"dry_run"}` — apply retention rules now |
+| `POST` | `/ui/api/policies/immutable` | `{"rules":[{"repos","tags","disabled"}]}` — replace immutability rules |
+| `GET` | `/ui/api/users` | Users (administrator) |
 | `POST` | `/ui/api/users/create` | `{"name","role","password","must_change"}` |
-| `POST` | `/ui/api/users/role` | `{"name","role"}` — для созданных в админке |
-| `POST` | `/ui/api/users/password` | `{"name","password","must_change"}` — сброс пароля |
-| `POST` | `/ui/api/users/delete` | `{"name"}` — для созданных в админке |
-| `GET` | `/ui/api/image` | `?repo=&ref=` — подробности образа: платформы, конфигурация, слои |
-| `GET` | `/ui/api/projects` | Видимые пользователю проекты |
-| `GET` | `/ui/api/project` | `?name=` — проект: настройки, участники, репозитории |
-| `POST` | `/ui/api/projects/create` | `{"name","description","public","quota_bytes"}` (администратор) |
-| `POST` | `/ui/api/projects/update` | `{"name","description","public","quota_bytes"}` (админ проекта; квота — администратор) |
-| `POST` | `/ui/api/projects/member` | `{"name","user","role"}`; пустая роль — убрать участника (админ проекта) |
-| `POST` | `/ui/api/projects/delete` | `{"name"}` — только пустой проект (администратор) |
-| `GET` | `/ui/api/robots` | Robot-аккаунты (администратор) |
+| `POST` | `/ui/api/users/role` | `{"name","role"}` — for users created in the web admin |
+| `POST` | `/ui/api/users/password` | `{"name","password","must_change"}` — password reset |
+| `POST` | `/ui/api/users/delete` | `{"name"}` — for users created in the web admin |
+| `GET` | `/ui/api/image` | `?repo=&ref=` — image details: platforms, configuration, layers |
+| `GET` | `/ui/api/projects` | Projects visible to the user |
+| `GET` | `/ui/api/project` | `?name=` — a project: settings, members, repositories |
+| `POST` | `/ui/api/projects/create` | `{"name","description","public","quota_bytes"}` (administrator) |
+| `POST` | `/ui/api/projects/update` | `{"name","description","public","quota_bytes"}` (project admin; quota — administrator) |
+| `POST` | `/ui/api/projects/member` | `{"name","user","role"}`; empty role — remove the member (project admin) |
+| `POST` | `/ui/api/projects/delete` | `{"name"}` — empty project only (administrator) |
+| `GET` | `/ui/api/robots` | Robot accounts (administrator) |
 | `POST` | `/ui/api/robots/create` | `{"name","description","permissions":[{"project","actions"}],"expires_days"}` → `{"name","secret"}` |
 | `POST` | `/ui/api/robots/update` | `{"name","description","permissions","expires_days","disabled"}` |
-| `POST` | `/ui/api/robots/secret` | `{"name"}` → новый `{"secret"}` |
+| `POST` | `/ui/api/robots/secret` | `{"name"}` → new `{"secret"}` |
 | `POST` | `/ui/api/robots/delete` | `{"name"}` |
-| `GET` | `/ui/api/webhooks` | Webhooks, которыми может управлять пользователь, и их последние отправки |
-| `POST` | `/ui/api/webhooks/save` | `{"id","name","url","project","events","format","auth_header","skip_verify","disabled"}`; без `id` — создать |
+| `GET` | `/ui/api/webhooks` | Webhooks the user can manage, and their recent deliveries |
+| `POST` | `/ui/api/webhooks/save` | `{"id","name","url","project","events","format","auth_header","skip_verify","disabled"}`; without `id` — create |
 | `POST` | `/ui/api/webhooks/delete` | `{"id"}` |
-| `POST` | `/ui/api/webhooks/test` | `{"id"}` — отправить тестовое событие |
-| `GET` | `/ui/api/audit` | Журнал: `?user=&action=&q=&before=&limit=` (администратор) |
-| `POST` | `/ui/api/gc/settings` | `{"interval":"6h"}` — расписание; `"0"` — выключить, `""` — значение из env (администратор) |
+| `POST` | `/ui/api/webhooks/test` | `{"id"}` — send a test event |
+| `GET` | `/ui/api/audit` | Audit log: `?user=&action=&q=&before=&limit=` (administrator) |
+| `POST` | `/ui/api/gc/settings` | `{"interval":"6h"}` — schedule; `"0"` — off, `""` — value from env (administrator) |
 
 ---
 
 ### GET /stats
 
-Возвращает список репозиториев, их теги и количество pulls.
+Returns the list of repositories, their tags and pull counts.
 
-При `RGSTR_AUTH_ENABLED=true` требует Basic auth (те же пользователи, что и для реестра) или Bearer-токен с доступом к каталогу.
+With `RGSTR_AUTH_ENABLED=true` it requires Basic auth (the same users as for the registry) or a Bearer token with catalog access.
 
 ```bash
 curl https://registry.example.com/stats
-# С авторизацией:
+# With authentication:
 curl -u alice:secret https://registry.example.com/stats
 ```
 
@@ -1055,144 +1057,144 @@ curl -u alice:secret https://registry.example.com/stats
 }
 ```
 
-Счётчики pulls персистируются в `stats.json` в директории хранилища и сохраняются между перезапусками.
+Pull counters are persisted in `stats.json` in the storage directory and survive restarts.
 
 ---
 
-## Структура хранилища
+## Storage layout
 
 ```
-<RGSTR_STORAGE>/                    # или бакет S3 (RGSTR_STORAGE_S3_*): те же пути — ключи объектов
+<RGSTR_STORAGE>/                    # or an S3 bucket (RGSTR_STORAGE_S3_*): the same paths are object keys
 ├── blobs/
 │   └── sha256/
-│       └── <2 hex>/<62 hex>        # содержимое blob'а (адресация по digest)
+│       └── <2 hex>/<62 hex>        # blob content (addressed by digest)
 ├── uploads/
 │   └── <uuid>/
-│       ├── chunk-<смещение>        # части незавершённой загрузки, по одной на PATCH
-│       └── info.json               # uuid, repo, offset, started_at, состояние sha256
+│       ├── chunk-<offset>          # chunks of an unfinished upload, one per PATCH
+│       └── info.json               # uuid, repo, offset, started_at, sha256 state
 ├── repositories/
 │   └── <namespace>/<repo>/
 │       ├── manifests/
-│       │   ├── by-digest/<hex>     # содержимое манифеста + content-type
-│       │   └── tags/<tag>          # hex-digest тега (указатель)
+│       │   ├── by-digest/<hex>     # manifest content + content-type
+│       │   └── tags/<tag>          # hex digest of the tag (pointer)
 │       └── layers/
-│           └── <hex>               # пустой маркер: blob принадлежит репозиторию
-├── users.json                      # пользователи из админки и сменённые пароли (bcrypt)
-├── meta.json                       # проекты, роботы, политики, webhooks, настройки, сессии, история GC
-├── audit.log, audit.log.1          # журнал (JSON по строке), ротация по 10 МБ
-├── stats.json                      # счётчики pull
-└── .rgstr.lock                     # блокировка: один процесс на каталог
+│           └── <hex>               # empty marker: the blob belongs to the repository
+├── users.json                      # users from the web admin and changed passwords (bcrypt)
+├── meta.json                       # projects, robots, policies, webhooks, settings, sessions, GC history
+├── audit.log, audit.log.1          # audit log (one JSON line per event), rotated at 10 MB
+├── stats.json                      # pull counters
+└── .rgstr.lock                     # lock: one process per directory
 ```
 
-В [режиме кластера](#кластер-ha) `users.json`, `meta.json`, журнал и счётчики
-хранятся в PostgreSQL (таблицы `rgstr_docs`, `rgstr_audit`, `rgstr_pulls`,
-`rgstr_jobs`), а не в файлах; блокировки каталога нет.
+In [cluster mode](#cluster-ha), `users.json`, `meta.json`, the audit log and the counters
+are stored in PostgreSQL (tables `rgstr_docs`, `rgstr_audit`, `rgstr_pulls`,
+`rgstr_jobs`) rather than in files; there is no directory lock.
 
-Загрузка, начатая на одном процессе, продолжается на любом: каждая часть
-сохраняется отдельно вместе с состоянием sha256, а при завершении части
-склеиваются в blob (в S3 — копированием на стороне хранилища).
+An upload started on one process continues on any other: each chunk is
+saved separately together with the sha256 state, and on completion the chunks
+are joined into a blob (in S3, by a server-side copy).
 
-Дедупликация работает автоматически: если два репозитория содержат одинаковый слой, на диске он хранится один раз.
+Deduplication works automatically: if two repositories contain the same layer, it is stored on disk once.
 
-Несмотря на общее хранилище, каждый репозиторий отдаёт только «свои» blob'ы — те, что в него загружены, смонтированы или на которые ссылаются его манифесты (маркеры в `layers/`). Запрос чужого blob'а по digest возвращает `404`, поэтому через публичный репозиторий нельзя скачать слой приватного.
+Despite the shared storage, each repository serves only "its own" blobs — those uploaded to it, mounted into it, or referenced by its manifests (markers in `layers/`). Requesting another repository's blob by digest returns `404`, so a private repository's layer cannot be downloaded through a public one.
 
 ---
 
-## Сборка и тесты
+## Building and testing
 
-Нужен Go 1.26+.
+Requires Go 1.26+.
 
 ```bash
-make build      # сборка
-make test       # unit- и интеграционные тесты
-make cover      # с покрытием
+make build      # build
+make test       # unit and integration tests
+make cover      # with coverage
 make clean
 ```
 
-Тесты кластера идут на настоящих PostgreSQL и S3 и запускаются, только когда
-заданы адреса (так их запускает CI):
+Cluster tests run against real PostgreSQL and S3 and run only when
+their addresses are set (this is how CI runs them):
 
 ```bash
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=rgstr postgres:16-alpine
-# S3: SeaweedFS (или MinIO) с бакетом rgstr-test и ключами
+# S3: SeaweedFS (or MinIO) with an rgstr-test bucket and keys
 RGSTR_TEST_DATABASE_URL='postgres://postgres:pw@localhost:5432/rgstr?sslmode=disable' \
 RGSTR_TEST_S3=http://localhost:9000 RGSTR_TEST_S3_KEY=… RGSTR_TEST_S3_SECRET=… \
   go test ./internal/db ./internal/storage ./internal/backup ./test/ha
 ```
 
-`test/ha` запускает три процесса rgstr под нагрузкой push и pull и убивает их
-`kill -9` по одному (`RGSTR_TEST_HA_DURATION`, по умолчанию 40 с); образы
-проверяются по digest.
+`test/ha` starts three rgstr processes under push and pull load and kills them
+one by one with `kill -9` (`RGSTR_TEST_HA_DURATION`, 40 s by default); images
+are verified by digest.
 
 ---
 
-## Релизы (CI/CD)
+## Releases (CI/CD)
 
-Сборка настроена в `.github/workflows/`:
+The build is configured in `.github/workflows/`:
 
-- `ci.yml` — на каждый push в `main` и pull request: `go vet`, govulncheck (уязвимости в вызываемом коде), тесты; задача `cluster` — тесты кластера на PostgreSQL и SeaweedFS (S3), включая нагрузочный `test/ha`;
-- `release.yml` — сборка и публикация:
-  - push в `main` → образ `ghcr.io/piqab/rgstr:main`;
-  - тег `v*` → GitHub Release с бинарниками `rgstr-linux-{amd64,arm64}`, `mkpasswd-linux-{amd64,arm64}` и архивами `rgstr-<версия>-linux-{amd64,arm64}.tar.gz` (у каждого файла есть `.sha256`) и образ `:<версия>`, `:<major>.<minor>`, `:latest`.
+- `ci.yml` — on every push to `main` and every pull request: `go vet`, govulncheck (vulnerabilities in called code), tests; the `cluster` job runs the cluster tests on PostgreSQL and SeaweedFS (S3), including the `test/ha` load test;
+- `release.yml` — build and publish:
+  - push to `main` → image `ghcr.io/piqab/rgstr:main`;
+  - tag `v*` → a GitHub Release with the binaries `rgstr-linux-{amd64,arm64}`, `mkpasswd-linux-{amd64,arm64}` and the archives `rgstr-<version>-linux-{amd64,arm64}.tar.gz` (each file has a `.sha256`) and the image `:<version>`, `:<major>.<minor>`, `:latest`.
 
-Версия хранится в файле `VERSION` (например, `1.0.0`). Она же вшивается в бинарник при `make build`. Выпустить релиз:
+The version is stored in the `VERSION` file (for example, `1.0.0`). It is also embedded into the binary by `make build`. To cut a release:
 
 ```bash
-# 1. повысить версию в VERSION и закоммитить
-# 2. запушить main и поставить тег из файла
+# 1. bump the version in VERSION and commit
+# 2. push main and create a tag from the file
 git push origin main
 git tag v$(cat VERSION) && git push origin v$(cat VERSION)
 ```
 
-Если тег не совпадает с `v$(cat VERSION)`, релизная сборка падает с ошибкой.
+If the tag does not match `v$(cat VERSION)`, the release build fails with an error.
 
-Образ публикуется через встроенный `GITHUB_TOKEN`, дополнительные секреты не нужны. После первой публикации пакет в GHCR по умолчанию приватный — чтобы `docker pull` работал без логина, откройте **Packages → rgstr → Package settings → Change visibility → Public**.
+The image is published using the built-in `GITHUB_TOKEN`; no additional secrets are needed. After the first publish, the GHCR package is private by default — for `docker pull` to work without login, open **Packages → rgstr → Package settings → Change visibility → Public**.
 
 ---
 
-## Архитектура
+## Architecture
 
 ```
-main.go, cli.go     — запуск сервера; команды backup, backups, restore, migrate, version
+main.go, cli.go     — server startup; backup, backups, restore, migrate, version commands
 internal/
-├── config/    — конфигурация из переменных окружения
-├── registry/  — HTTP API реестра (/v2), роутинг, /healthz, /readyz, /stats
-├── storage/   — content-addressable хранилище: blob'ы, загрузки, манифесты, GC
-│                поверх драйвера: файловая система или S3
-├── s3/        — клиент S3 (подпись SigV4, multipart, копирование, presigned URL)
-├── db/        — PostgreSQL кластера: общие документы, журнал, счётчики,
-│                блокировка GC, захват плановых задач
-├── auth/      — токены (JWT), пользователи и роли, сессии, LDAP, OIDC, роботы
-├── meta/      — метаданные админки: проекты, политики, webhooks, настройки
-├── ops/       — операции админки (удаление, retention) с журналом и webhooks
-├── maint/     — расписание GC и retention
-├── policy/    — правила хранения тегов и неизменяемые теги
-├── backup/    — бэкапы по расписанию и восстановление (одиночный режим)
-├── audit/     — журнал действий
-├── stats/     — счётчики pull
-├── metrics/   — метрики Prometheus
-├── webhook/   — уведомления о событиях
-├── glob/      — паттерны репозиториев
-└── ui/        — веб-админка (встроенный SPA на JS) и её API
+├── config/    — configuration from environment variables
+├── registry/  — registry HTTP API (/v2), routing, /healthz, /readyz, /stats
+├── storage/   — content-addressable storage: blobs, uploads, manifests, GC
+│                on top of a driver: filesystem or S3
+├── s3/        — S3 client (SigV4 signing, multipart, copy, presigned URLs)
+├── db/        — cluster PostgreSQL: shared documents, audit log, counters,
+│                GC lock, claiming scheduled jobs
+├── auth/      — tokens (JWT), users and roles, sessions, LDAP, OIDC, robots
+├── meta/      — web admin metadata: projects, policies, webhooks, settings
+├── ops/       — web admin operations (deletion, retention) with audit log and webhooks
+├── maint/     — GC and retention scheduling
+├── policy/    — tag retention rules and immutable tags
+├── backup/    — scheduled backups and restore (single-process mode)
+├── audit/     — audit log
+├── stats/     — pull counters
+├── metrics/   — Prometheus metrics
+├── webhook/   — event notifications
+├── glob/      — repository patterns
+└── ui/        — web admin (embedded JS SPA) and its API
 ```
 
-### Модель блокировок
+### Locking model
 
-| Блокировка | Тип | Защищает |
+| Lock | Type | Protects |
 |---|---|---|
-| `gcMu` | `sync.RWMutex` | Операции процесса держат RLock; GC держит Lock — исключает гонку GC с записью |
-| Блокировка GC в PostgreSQL | advisory lock | В кластере: запись, которая делает данные достижимыми (манифест, связь blob'а с репозиторием, завершение загрузки), держит её разделяемо, GC — эксклюзивно, во всех процессах сразу |
-| `blobMu[digest]` | `sync.Map[*sync.Mutex]` | Параллельная запись одного blob'а — только первый горутин пишет, остальные видят готовый файл |
-| `uploadMu[uuid]` | `sync.Map[*sync.Mutex]` | Параллельные PATCH-чанки одной сессии — сериализует запись смещения |
-| Строка документа в PostgreSQL | `SELECT … FOR UPDATE` | В кластере: изменение пользователей и метаданных применяется к последней версии, ничего не теряется |
-| `.rgstr.lock` | `flock` | Одиночный режим: второй процесс на том же каталоге не запустится |
+| `gcMu` | `sync.RWMutex` | Process operations hold RLock; GC holds Lock — prevents GC from racing with writes |
+| GC lock in PostgreSQL | advisory lock | In the cluster: a write that makes data reachable (manifest, blob-to-repository link, upload completion) holds it shared, GC holds it exclusive, across all processes at once |
+| `blobMu[digest]` | `sync.Map[*sync.Mutex]` | Concurrent writes of the same blob — only the first goroutine writes, the others see the finished file |
+| `uploadMu[uuid]` | `sync.Map[*sync.Mutex]` | Concurrent PATCH chunks of one session — serializes offset writes |
+| Document row in PostgreSQL | `SELECT … FOR UPDATE` | In the cluster: changes to users and metadata are applied to the latest version, nothing is lost |
+| `.rgstr.lock` | `flock` | Single-process mode: a second process on the same directory will not start |
 
-Все записи атомарны: на диске — запись во временный файл и `os.Rename`, в S3 —
-объект появляется только целиком. Читатели никогда не видят частично
-записанный файл.
+All writes are atomic: on disk — write to a temporary file and `os.Rename`; in S3 —
+an object appears only as a whole. Readers never see a partially
+written file.
 
 ---
 
-## Лицензия
+## License
 
 [MIT](LICENSE)
