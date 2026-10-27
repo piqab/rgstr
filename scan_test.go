@@ -19,8 +19,13 @@ import (
 // fakeTrivy behaves like `trivy image` for the scanner: it pulls the
 // manifest from rgstr with the token it was given and prints a report.
 const fakeTrivy = `#!/bin/sh
+case "$*" in *--download-db-only*|*--download-java-db-only*)
+  # The databases come from other registries: the rgstr token must not be sent there.
+  [ -z "$TRIVY_REGISTRY_TOKEN" ] || { echo "registry token leaked to the database download" >&2; exit 3; }
+  exit 0;;
+esac
 for a; do last=$a; done
-case "$*" in *"--image-src remote"*"--insecure"*) ;; *) echo "unexpected arguments: $*" >&2; exit 2;; esac
+case "$*" in *"--image-src remote"*"--skip-db-update"*"--skip-java-db-update"*"--insecure"*) ;; *) echo "unexpected arguments: $*" >&2; exit 2;; esac
 host=${last%%/*}; rest=${last#*/}; repo=${rest%@*}; dg=${rest#*@}
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TRIVY_REGISTRY_TOKEN" \
   -H 'Accept: application/vnd.oci.image.manifest.v1+json' "http://$host/v2/$repo/manifests/$dg")

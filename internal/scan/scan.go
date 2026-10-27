@@ -107,7 +107,11 @@ type Scanner struct {
 	// OnScan is told about every finished scan (metrics).
 	OnScan func(err error)
 
-	queue  chan job
+	queue chan job
+
+	dbMu sync.Mutex
+	dbAt time.Time // last download of Trivy's databases
+
 	mu     sync.Mutex
 	queued map[string]bool          // digest → queued or running
 	cache  map[string]cachedSummary // digest → summary, for pull checks
@@ -384,17 +388,23 @@ type trivyMeta struct{ os, scanner string }
 // trivy runs `trivy image` on repo@digest of this registry.
 func (s *Scanner) trivy(ctx context.Context, j job) ([]Vulnerability, trivyMeta, error) {
 	var meta trivyMeta
-	tok, err := s.token(j.repo)
-	if err != nil {
-		return nil, meta, err
-	}
 	if err := os.MkdirAll(s.cfg.CacheDir, 0755); err != nil {
 		return nil, meta, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
+	if err := s.updateDB(ctx); err != nil {
+		return nil, meta, err
+	}
+	tok, err := s.token(j.repo)
+	if err != nil {
+		return nil, meta, err
+	}
+	// The databases are already here: Trivy must not fetch them now, as it
+	// would send the registry token (meant for rgstr) to their registries.
 	args := []string{"image", "--format", "json", "--quiet", "--scanners", "vuln",
-		"--image-src", "remote", "--cache-dir", s.cfg.CacheDir, "--timeout", s.cfg.Timeout.String()}
+		"--image-src", "remote", "--cache-dir", s.cfg.CacheDir, "--timeout", s.cfg.Timeout.String(),
+		"--skip-db-update", "--skip-java-db-update"}
 	if s.cfg.Server != "" {
 		args = append(args, "--server", s.cfg.Server)
 	}
@@ -402,9 +412,52 @@ func (s *Scanner) trivy(ctx context.Context, j job) ([]Vulnerability, trivyMeta,
 	// public name.
 	args = append(args, "--insecure")
 	args = append(args, s.target+"/"+j.repo+"@"+string(j.digest))
-	cmd := exec.CommandContext(ctx, s.cfg.Trivy, args...)
 	// The token goes through the environment, not the command line.
-	cmd.Env = append(os.Environ(), "TRIVY_REGISTRY_TOKEN="+tok)
+	stdout, err := s.runTrivy(ctx, args, "TRIVY_REGISTRY_TOKEN="+tok)
+	if err != nil {
+		return nil, meta, err
+	}
+	vulns, meta, err := parse(stdout)
+	if err != nil {
+		return nil, meta, fmt.Errorf("trivy output: %w", err)
+	}
+	return vulns, meta, nil
+}
+
+// dbRefresh is how often Trivy's databases are downloaded again (Trivy
+// publishes the vulnerability database every 6 hours).
+const dbRefresh = 6 * time.Hour
+
+// updateDB downloads Trivy's vulnerability and Java databases when they
+// are missing or older than dbRefresh — without the registry token, which
+// is for rgstr only. In client/server mode the server keeps the database.
+func (s *Scanner) updateDB(ctx context.Context) error {
+	if s.cfg.Server != "" {
+		return nil
+	}
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+	if time.Since(s.dbAt) < dbRefresh {
+		return nil
+	}
+	for _, flag := range []string{"--download-db-only", "--download-java-db-only"} {
+		if _, err := s.runTrivy(ctx, []string{"image", flag, "--quiet", "--cache-dir", s.cfg.CacheDir}); err != nil {
+			if !s.dbAt.IsZero() {
+				log.Printf("scan: updating Trivy's database: %v (using the old one)", err)
+				return nil
+			}
+			return fmt.Errorf("downloading Trivy's database: %w", err)
+		}
+	}
+	s.dbAt = time.Now()
+	return nil
+}
+
+// runTrivy runs trivy with args and extra environment; its standard
+// output is returned.
+func (s *Scanner) runTrivy(ctx context.Context, args []string, env ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, s.cfg.Trivy, args...)
+	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -413,15 +466,11 @@ func (s *Scanner) trivy(ctx context.Context, j job) ([]Vulnerability, trivyMeta,
 			msg = msg[len(msg)-2000:]
 		}
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, meta, fmt.Errorf("trivy not found (%s): install it or set RGSTR_SCAN_TRIVY", s.cfg.Trivy)
+			return nil, fmt.Errorf("trivy not found (%s): install it or set RGSTR_SCAN_TRIVY", s.cfg.Trivy)
 		}
-		return nil, meta, fmt.Errorf("trivy: %v: %s", err, msg)
+		return nil, fmt.Errorf("trivy: %v: %s", err, msg)
 	}
-	vulns, meta, err := parse(stdout.Bytes())
-	if err != nil {
-		return nil, meta, fmt.Errorf("trivy output: %w", err)
-	}
-	return vulns, meta, nil
+	return stdout.Bytes(), nil
 }
 
 // parse reads Trivy's JSON report.
