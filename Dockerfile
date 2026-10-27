@@ -28,7 +28,7 @@ FROM ghcr.io/aquasecurity/trivy:0.76.1 AS trivy
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # Use alpine (not scratch) so the health check can use wget.
-FROM alpine:3.22
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata wget
 
