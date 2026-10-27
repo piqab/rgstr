@@ -80,6 +80,33 @@ type Config struct {
 	OIDC OIDCConfig
 
 	Backup BackupConfig
+
+	// Proxies are pull-through cache projects set in env (RGSTR_PROXIES);
+	// more can be made in the web admin. ProxyTTL is how long a cached tag
+	// is used before asking the upstream again.
+	Proxies  []ProxyEnv
+	ProxyTTL time.Duration
+
+	Scan ScanConfig
+}
+
+// ProxyEnv is a cache project from RGSTR_PROXIES="name=url,…" with
+// RGSTR_PROXY_<NAME>_USERNAME, _PASSWORD and _PUBLIC.
+type ProxyEnv struct {
+	Name, URL, Username, Password string
+	Public                        bool
+}
+
+// ScanConfig turns on vulnerability scanning with Trivy (RGSTR_SCAN_*).
+type ScanConfig struct {
+	Enabled     bool
+	Trivy       string        // the trivy binary
+	Server      string        // optional Trivy server (client/server mode)
+	OnPush      bool          // scan new images (pushed or cached)
+	Interval    time.Duration // rescan images this often (new vulnerabilities)
+	Concurrency int
+	Timeout     time.Duration
+	CacheDir    string // Trivy's database; "": next to the data
 }
 
 // Cluster reports whether processes share state through a database.
@@ -237,6 +264,20 @@ func Load() *Config {
 			Roles:         groupRoles("RGSTR_OIDC_"),
 		},
 
+		Proxies:  proxies(),
+		ProxyTTL: envDuration("RGSTR_PROXY_TTL", 5*time.Minute),
+
+		Scan: ScanConfig{
+			Enabled:     envBool("RGSTR_SCAN_ENABLED", false),
+			Trivy:       env("RGSTR_SCAN_TRIVY", "trivy"),
+			Server:      env("RGSTR_SCAN_TRIVY_SERVER", ""),
+			OnPush:      envBool("RGSTR_SCAN_ON_PUSH", true),
+			Interval:    envDuration("RGSTR_SCAN_INTERVAL", 24*time.Hour),
+			Concurrency: envInt("RGSTR_SCAN_CONCURRENCY", 1),
+			Timeout:     envDuration("RGSTR_SCAN_TIMEOUT", 15*time.Minute),
+			CacheDir:    env("RGSTR_SCAN_CACHE_DIR", ""),
+		},
+
 		Backup: BackupConfig{
 			Target:   env("RGSTR_BACKUP_TARGET", ""),
 			Schedule: env("RGSTR_BACKUP_SCHEDULE", "0 3 * * *"),
@@ -251,6 +292,25 @@ func Load() *Config {
 			},
 		},
 	}
+}
+
+// proxies reads RGSTR_PROXIES="dockerhub=https://registry-1.docker.io,…".
+func proxies() []ProxyEnv {
+	var out []ProxyEnv
+	for _, item := range parseList(os.Getenv("RGSTR_PROXIES")) {
+		name, url, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		key := "RGSTR_PROXY_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(name)) + "_"
+		out = append(out, ProxyEnv{
+			Name: name, URL: strings.TrimSpace(url),
+			Username: os.Getenv(key + "USERNAME"), Password: os.Getenv(key + "PASSWORD"),
+			Public: envBool(key+"PUBLIC", false),
+		})
+	}
+	return out
 }
 
 func envInt(key string, def int) int {

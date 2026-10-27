@@ -127,6 +127,7 @@
       <span class="tag-digest" title="${esc(tg.digest)}">${esc(tg.digest.slice(0, 19))}…</span>
       ${same.length ? `<span class="tag-same">${esc(t('repos.sameAs', {tags: same.join(', ')}))}</span>` : ''}
       <span class="platforms">${plats}</span>
+      ${App.vulnBadge(tg.vulns)}
       <span class="tag-size">${tg.size ? fmtBytes(tg.size) : ''}</span>
       <span class="tag-time" title="${esc(App.fmtTime(tg.pushed_at))}">${esc(fmtAgo(tg.pushed_at))}</span>
       ${del}

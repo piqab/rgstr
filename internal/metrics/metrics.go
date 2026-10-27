@@ -63,6 +63,7 @@ type Registry struct {
 	gcRuns   counterVec // result
 	gcFreed  counterVec
 	backups  counterVec // result
+	scans    counterVec // result
 }
 
 // New creates a metrics registry. gauges is called on every scrape.
@@ -88,6 +89,18 @@ func (r *Registry) GCRun(bytesFreed int64, err error) {
 	}
 	r.gcRuns.add(label("result", result), 1)
 	r.gcFreed.add("", float64(bytesFreed))
+}
+
+// ScanRun records a finished vulnerability scan.
+func (r *Registry) ScanRun(err error) {
+	if r == nil {
+		return
+	}
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	r.scans.add(label("result", result), 1)
 }
 
 // BackupRun records a finished backup.
@@ -134,6 +147,9 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if g.DiskSupported {
 		write(bw, "rgstr_disk_total_bytes", "gauge", "Size of the storage filesystem.", map[string]float64{"": float64(g.DiskTotalBytes)})
 		write(bw, "rgstr_disk_free_bytes", "gauge", "Free space on the storage filesystem.", map[string]float64{"": float64(g.DiskFreeBytes)})
+	}
+	if s := r.scans.snapshot(); len(s) > 0 {
+		write(bw, "rgstr_scans_total", "counter", "Vulnerability scans by result.", s)
 	}
 	if g.Backups {
 		write(bw, "rgstr_backup_runs_total", "counter", "Backups by result.", r.backups.snapshot())

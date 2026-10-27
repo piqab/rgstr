@@ -21,12 +21,18 @@ RUN V="$VERSION"; if [ "$V" = dev ] && [ -f VERSION ]; then V="v$(cat VERSION)";
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /mkpasswd ./cmd/mkpasswd
 
+# ── Trivy ─────────────────────────────────────────────────────────────────────
+# The vulnerability scanner (RGSTR_SCAN_ENABLED=true); its database is
+# downloaded on the first scan.
+FROM ghcr.io/aquasecurity/trivy:0.76.1 AS trivy
+
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # Use alpine (not scratch) so the health check can use wget.
-FROM alpine:3.19
+FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates tzdata wget
 
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=builder /rgstr /rgstr
 # Password hash generator: docker run --rm --entrypoint /mkpasswd <image> alice secret
 COPY --from=builder /mkpasswd /mkpasswd

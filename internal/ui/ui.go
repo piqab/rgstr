@@ -14,6 +14,7 @@ import (
 	"rgstr/internal/maint"
 	"rgstr/internal/meta"
 	"rgstr/internal/ops"
+	"rgstr/internal/scan"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
 	"rgstr/internal/webhook"
@@ -32,6 +33,7 @@ type Deps struct {
 	Maint   *maint.Runner
 	Hooks   *webhook.Notifier
 	Backup  *backup.Runner // nil: backups off
+	Scanner *scan.Scanner  // nil: scanning off
 }
 
 // Handler serves the web UI and its API.
@@ -44,12 +46,13 @@ type Handler struct {
 	maint   *maint.Runner
 	hooks   *webhook.Notifier
 	backup  *backup.Runner
+	scanner *scan.Scanner
 }
 
 // New creates a UI handler.
 func New(d Deps) *Handler {
 	return &Handler{auth: d.Auth, store: d.Store, counter: d.Counter, ops: d.Ops, meta: d.Meta, maint: d.Maint,
-		hooks: d.Hooks, backup: d.Backup}
+		hooks: d.Hooks, backup: d.Backup, scanner: d.Scanner}
 }
 
 // Mount registers the UI handlers on mux.
@@ -77,6 +80,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/tags/delete", h.handleDeleteTags)
 	mux.HandleFunc("/ui/api/images/delete", h.handleDeleteImage)
 	mux.HandleFunc("/ui/api/image", h.handleImage)
+	mux.HandleFunc("/ui/api/scan", h.handleScan)
+	mux.HandleFunc("/ui/api/scan/run", h.handleScanRun)
 
 	mux.HandleFunc("/ui/api/disk", h.handleDisk)
 	mux.HandleFunc("/ui/api/gc", h.handleGC)

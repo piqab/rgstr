@@ -233,20 +233,35 @@ func (fs *Store) CollectGarbage(opts GCOptions) (GCResult, error) {
 	}
 
 	// ── Phase 3: Remove unreachable by-digest manifests ──────────────────
+	kept := map[string]bool{} // manifests still stored somewhere
 	for name, st := range repos {
 		for hexHash, p := range st.manifests {
 			if reachable[p] {
+				kept[hexHash] = true
 				continue
 			}
 			if !opts.DryRun {
 				if err := fs.d.Delete(bg, p); err != nil {
+					kept[hexHash] = true
 					continue
 				}
 				log.Printf("gc: removed manifest %s@sha256:%s", name, hexHash)
+			} else {
+				kept[hexHash] = true
 			}
 			res.ManifestsRemoved++
 			if len(res.Manifests) < MaxGCListed {
 				res.Manifests = append(res.Manifests, name+"@sha256:"+hexHash)
+			}
+		}
+	}
+
+	// ── Phase 3b: Drop vulnerability reports of removed manifests ─────────
+	if !opts.DryRun {
+		scans, _ := fs.d.List(bg, "scans")
+		for _, e := range scans {
+			if e.IsDir && !kept[e.Name] {
+				fs.d.Delete(bg, join("scans", e.Name))
 			}
 		}
 	}

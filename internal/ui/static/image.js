@@ -44,6 +44,8 @@
         </table>
       </div>
 
+      <div class="card" id="img-vulns"><div class="loading">${esc(t('common.loading'))}</div></div>
+
       ${img.platforms ? `
         <h3>${esc(t('img.platforms'))}</h3>
         <div class="toolbar" id="plat-tabs">${img.platforms.map((p, i) => `
@@ -62,8 +64,10 @@
       const step = e.target.closest('.step');
       if (step) step.classList.toggle('clamp');
     });
+    const vulns = el.querySelector('#img-vulns');
     if (img.image) {
       box.innerHTML = details(img.image);
+      loadVulns(vulns, repo, img.digest);
     } else if (img.platforms && img.platforms.length) {
       const show = async i => {
         el.querySelectorAll('#plat-tabs .btn').forEach(b => b.classList.toggle('btn-primary', +b.dataset.i === i));
@@ -71,6 +75,7 @@
         const child = await get(repo, img.platforms[i].digest);
         box.innerHTML = `<p class="muted small" style="margin:4px 0 0">${esc(t('img.platformDigest'))} <span class="mono">${esc(child.digest)}</span></p>` +
           (child.image ? details(child.image) : '');
+        loadVulns(vulns, repo, child.digest, platName(img.platforms[i]));
       };
       el.querySelector('#plat-tabs').addEventListener('click', e => {
         const b = e.target.closest('[data-i]');
@@ -78,6 +83,59 @@
       });
       await show(0);
     }
+  }
+
+  // ── Vulnerabilities ───────────────────────────────────────────────────────
+
+  let vulnTimer;
+  async function loadVulns(card, repo, digest, platform) {
+    clearTimeout(vulnTimer);
+    const res = await App.api('/ui/api/scan?' + new URLSearchParams({repo, ref: digest}));
+    if (!res.ok) { card.innerHTML = `<p class="muted">${esc(res.data.error || '')}</p>`; return; }
+    const d = res.data;
+    const title = `<h3 style="margin-top:0">${esc(t('vuln.title'))}${platform ? ` <span class="muted small">${esc(platform)}</span>` : ''}</h3>`;
+    if (!d.enabled) { card.innerHTML = title + `<p class="muted small">${esc(t('vuln.off'))}</p>`; return; }
+    const s = d.summary;
+    const scanBtn = d.can_scan ? `<button class="btn btn-sm" id="v-scan">${esc(s ? t('vuln.rescan') : t('vuln.scan'))}</button>` : '';
+    let body;
+    if (!s) body = `<p class="muted">${esc(t('vuln.notScanned'))}</p>`;
+    else if (s.status === 'running') body = `<p>${esc(t('vuln.running'))}</p>`;
+    else if (s.status === 'error') body = `<div class="err" style="display:block">${esc(t('vuln.failed', {error: s.error}))}</div>`;
+    else body = vulnReport(s, d.report);
+    card.innerHTML = `<div class="toolbar" style="margin-bottom:8px"><div class="grow">${title}</div>${scanBtn}</div>` + body;
+    const btn = card.querySelector('#v-scan');
+    if (btn) btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const r = await App.post('/ui/api/scan/run', {repo, digest});
+      if (!r.ok && r.status !== 202) { App.toast(r.data.error || t('common.failed', {status: r.status})); btn.disabled = false; return; }
+      App.toast(t('vuln.started'));
+      vulnTimer = setTimeout(() => loadVulns(card, repo, digest, platform), 1500);
+    });
+    const only = card.querySelector('#v-fixable');
+    if (only) only.addEventListener('change', () => {
+      card.querySelectorAll('tr[data-fixed="0"]').forEach(r => { r.style.display = only.checked ? 'none' : ''; });
+    });
+    if (s && s.status === 'running') vulnTimer = setTimeout(() => loadVulns(card, repo, digest, platform), 3000);
+  }
+
+  function vulnReport(s, report) {
+    const counts = App.severities.filter(x => s.counts && s.counts[x])
+      .map(x => `<span class="badge sev-${x}">${esc(s.counts[x] + ' ' + t('sevn.' + x))}</span>`).join(' ');
+    const meta = `<p class="muted small">${esc(t('vuln.meta', {time: App.fmtTime(s.finished), scanner: s.scanner || '', os: s.os || '—'}))}</p>`;
+    const list = report && report.vulnerabilities || [];
+    if (!list.length) return `<p><span class="badge badge-ok">${esc(t('vuln.none'))}</span></p>` + meta;
+    return `<p>${counts} ${s.fixable ? `<span class="muted small">· ${esc(t('vuln.fixable', {n: s.fixable}))}</span>` : ''}</p>${meta}
+      <label class="check"><input type="checkbox" id="v-fixable">${esc(t('vuln.onlyFixable'))}</label>
+      <div class="tbl-wrap" style="max-height:480px;overflow:auto"><table class="tbl">
+        <tr><th>${esc(t('vuln.severity'))}</th><th>${esc(t('vuln.id'))}</th><th>${esc(t('vuln.package'))}</th>
+          <th>${esc(t('vuln.installed'))}</th><th>${esc(t('vuln.fixedIn'))}</th></tr>
+        ${list.map(v => `<tr data-fixed="${v.fixed ? 1 : 0}">
+          <td><span class="badge sev-${esc(v.severity)}">${esc(t('sev.' + v.severity))}</span></td>
+          <td>${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.id)}</a>` : esc(v.id)}
+            ${v.title ? `<div class="muted small">${esc(v.title)}</div>` : ''}</td>
+          <td>${esc(v.package)}</td><td class="mono small">${esc(v.installed)}</td>
+          <td class="mono small">${esc(v.fixed || '—')}</td></tr>`).join('')}
+      </table></div>`;
   }
 
   function details(d) {
@@ -144,6 +202,22 @@
 })();
 
 App.addLang('en', {
+  'vuln.title': 'Vulnerabilities',
+  'vuln.off': 'Scanning is not configured (RGSTR_SCAN_ENABLED=true).',
+  'vuln.notScanned': 'Not scanned yet.',
+  'vuln.scan': 'Scan',
+  'vuln.rescan': 'Scan again',
+  'vuln.running': 'Scanning…',
+  'vuln.started': 'Scan started',
+  'vuln.failed': 'The scan failed: {error}',
+  'vuln.meta': 'Scanned {time} by {scanner}; OS: {os}',
+  'vuln.fixable': '{n} fixable by updating',
+  'vuln.onlyFixable': 'Only those with a fix',
+  'vuln.severity': 'Severity',
+  'vuln.id': 'Vulnerability',
+  'vuln.package': 'Package',
+  'vuln.installed': 'Installed',
+  'vuln.fixedIn': 'Fixed in',
   'nav.image': 'Image',
   'img.digest': 'Digest',
   'img.tags': 'Tags',

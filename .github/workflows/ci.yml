@@ -72,3 +72,37 @@ jobs:
           RGSTR_TEST_S3_SECRET: cisecret
           RGSTR_TEST_HA_DURATION: 30s
         run: go test -count=1 -timeout 15m -v ./internal/db ./internal/storage ./internal/backup ./test/ha
+
+  # Vulnerability scanning with the Trivy built into the image: an old
+  # Alpine with known critical vulnerabilities is pushed, scanned, and then
+  # refused by the project's policy.
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t rgstr:ci .
+
+      - name: Push, scan, refuse
+        run: |
+          docker run -d --name rgstr -p 5000:5000 -e RGSTR_SCAN_ENABLED=true rgstr:ci
+          for i in $(seq 30); do curl -fs localhost:5000/healthz >/dev/null && break || true; sleep 1; done
+          curl -fs -X POST -H 'Content-Type: application/json' \
+            -d '{"name":"team","block_severity":"critical"}' localhost:5000/ui/api/projects/create
+          docker pull -q alpine:3.10
+          docker tag alpine:3.10 localhost:5000/team/old:3.10
+          docker push -q localhost:5000/team/old:3.10
+          status=
+          for i in $(seq 120); do
+            status=$(curl -fs 'localhost:5000/ui/api/scan?repo=team/old&ref=3.10' | jq -r '.summary.status // "none"' || true)
+            [ "$status" = done ] || [ "$status" = error ] && break
+            sleep 5
+          done
+          curl -fs 'localhost:5000/ui/api/scan?repo=team/old&ref=3.10' | jq '.summary'
+          [ "$status" = done ] || { docker logs rgstr | tail -30; exit 1; }
+          critical=$(curl -fs 'localhost:5000/ui/api/scan?repo=team/old&ref=3.10' | jq '.summary.counts.critical // 0')
+          [ "$critical" -gt 0 ] || { echo "no critical vulnerabilities found in alpine:3.10"; exit 1; }
+          docker rmi localhost:5000/team/old:3.10 alpine:3.10
+          if docker pull localhost:5000/team/old:3.10 2>pull.err; then echo "the policy did not refuse the pull"; exit 1; fi
+          grep -q vulnerabilities pull.err && echo "pull refused: $(cat pull.err)"

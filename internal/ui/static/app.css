@@ -148,3 +148,9 @@ footer{text-align:center;color:#aaa;font-size:.78rem;padding:8px 16px 24px;displ
 .login-or{text-align:center;color:#aaa;font-size:.8rem;margin:10px 0 2px}
 .btn-sso{display:block;text-align:center;text-decoration:none;box-sizing:border-box}
 .login-version{text-align:center;color:#bbb;font-size:.75rem;margin-top:8px}
+
+.sev-critical{background:#b3261e;color:#fff}
+.sev-high{background:#e8710a;color:#fff}
+.sev-medium{background:#f2c94c;color:#3a2e00}
+.sev-low{background:#d9e2ec;color:#334}
+.sev-unknown{background:#eee;color:#555}

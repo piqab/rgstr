@@ -30,6 +30,8 @@ import (
 	"rgstr/internal/meta"
 	"rgstr/internal/metrics"
 	"rgstr/internal/ops"
+	"rgstr/internal/proxy"
+	"rgstr/internal/scan"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
 	"rgstr/internal/ui"
@@ -68,6 +70,8 @@ type Registry struct {
 	metrics     *metrics.Registry // nil unless RGSTR_METRICS_ENABLED
 	backup      *backup.Runner    // nil unless RGSTR_BACKUP_TARGET
 	db          *db.DB            // nil unless RGSTR_DATABASE_URL (cluster)
+	proxy       *proxy.Cache      // pull-through cache projects
+	scanner     *scan.Scanner     // nil unless RGSTR_SCAN_ENABLED
 
 	sizeMu sync.Mutex
 	size   int64
@@ -126,6 +130,20 @@ func NewCluster(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *con
 		maint:    maint.New(cfg, store, m, o),
 		hooks:    hooks,
 		db:       database,
+	}
+	r.proxy = proxy.New(store, m, cfg.ProxyTTL)
+	if cfg.Scan.Enabled {
+		r.scanner = scan.New(cfg, store, func(repo string) (string, error) {
+			return tokenSvc.Issue(scan.Subject, []auth.Access{{Type: "repository", Name: repo, Actions: []string{"pull"}}})
+		})
+		r.scanner.Claim = r.maint.Claim
+		r.scanner.OnScan = r.metrics.ScanRun
+		if r.scanner.OnPush() {
+			r.proxy.OnCached = r.scanner.Enqueue
+		}
+	}
+	if err := applyProxyEnv(m, cfg.Proxies); err != nil {
+		log.Fatalf("RGSTR_PROXIES: %v", err)
 	}
 	if database != nil {
 		store.SetLocker(database)
@@ -234,12 +252,16 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 		Maint:   reg.maint,
 		Hooks:   reg.hooks,
 		Backup:  reg.backup,
+		Scanner: reg.scanner,
 	}).Mount(mux)
 }
 
 // Start launches background maintenance (scheduled GC) until ctx ends.
 func (reg *Registry) Start(ctx context.Context) {
 	reg.maint.Start(ctx)
+	if reg.scanner != nil {
+		reg.scanner.Start(ctx)
+	}
 	if reg.backup != nil {
 		reg.backup.Start(ctx)
 	}
@@ -285,6 +307,20 @@ func (reg *Registry) dispatch(w http.ResponseWriter, r *http.Request) {
 	// ── Manifests ─────────────────────────────────────────────────────────
 	if m := reManifest.FindStringSubmatch(path); m != nil {
 		repo, ref := m[1], m[2]
+		if p, ok := reg.proxy.For(repo); ok {
+			switch method {
+			case http.MethodGet, http.MethodHead:
+				// Fetch or refresh from the upstream; then served as usual.
+				if err := reg.proxy.EnsureManifest(r.Context(), p, repo, ref, r.Header.Values("Accept")); err != nil {
+					status, code := proxy.Status(err)
+					writeError(w, status, code, err.Error(), nil)
+					return
+				}
+			case http.MethodPut:
+				writeError(w, http.StatusForbidden, CodeDenied, proxy.ErrReadOnly.Error(), nil)
+				return
+			}
+		}
 		switch method {
 		case http.MethodHead:
 			reg.handleHeadManifest(w, r, repo, ref)
@@ -304,6 +340,10 @@ func (reg *Registry) dispatch(w http.ResponseWriter, r *http.Request) {
 	// Must be checked before the "start upload" pattern.
 	if m := reUploadID.FindStringSubmatch(path); m != nil {
 		repo, uuid := m[1], m[2]
+		if _, ok := reg.proxy.For(repo); ok {
+			writeError(w, http.StatusForbidden, CodeDenied, proxy.ErrReadOnly.Error(), nil)
+			return
+		}
 		switch method {
 		case http.MethodGet:
 			reg.handleGetUpload(w, r, repo, uuid)
@@ -321,6 +361,10 @@ func (reg *Registry) dispatch(w http.ResponseWriter, r *http.Request) {
 
 	// ── Start upload / cross-repo mount ───────────────────────────────────
 	if m := reUpload.FindStringSubmatch(path); m != nil {
+		if _, ok := reg.proxy.For(m[1]); ok {
+			writeError(w, http.StatusForbidden, CodeDenied, proxy.ErrReadOnly.Error(), nil)
+			return
+		}
 		if method == http.MethodPost {
 			reg.handleStartUpload(w, r, m[1])
 		} else {
@@ -332,6 +376,11 @@ func (reg *Registry) dispatch(w http.ResponseWriter, r *http.Request) {
 	// ── Blobs ─────────────────────────────────────────────────────────────
 	if m := reBlob.FindStringSubmatch(path); m != nil {
 		repo, dgst := m[1], storage.Digest(m[2])
+		if p, ok := reg.proxy.For(repo); ok && (method == http.MethodGet || method == http.MethodHead) && dgst.Valid() {
+			if reg.proxy.ServeBlob(w, r, p, repo, dgst) {
+				return
+			}
+		}
 		switch method {
 		case http.MethodHead:
 			reg.handleHeadBlob(w, r, repo, dgst)
@@ -654,6 +703,10 @@ func (reg *Registry) handleHeadManifest(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
+	if msg := reg.blockedPull(r, repo, mf.Digest); msg != "" {
+		writeError(w, http.StatusForbidden, CodeDenied, msg, nil)
+		return
+	}
 	// Honour Accept header: if the client does not accept the stored
 	// content-type we still return it (clients generally accept everything).
 	w.Header().Set("Content-Type", mf.ContentType)
@@ -672,8 +725,14 @@ func (reg *Registry) handleGetManifest(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
-	reg.counter.RecordPull(repo)
-	reg.ops.RecordPull(ops.ActorFrom(r, auth.SubjectFromCtx(r.Context())), repo, reference, mf.Digest)
+	if msg := reg.blockedPull(r, repo, mf.Digest); msg != "" {
+		writeError(w, http.StatusForbidden, CodeDenied, msg, nil)
+		return
+	}
+	if subject := auth.SubjectFromCtx(r.Context()); subject != scan.Subject { // scans are not pulls
+		reg.counter.RecordPull(repo)
+		reg.ops.RecordPull(ops.ActorFrom(r, subject), repo, reference, mf.Digest)
+	}
 	w.Header().Set("Content-Type", mf.ContentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(mf.Content)))
 	w.Header().Set("Docker-Content-Digest", string(mf.Digest))
@@ -710,6 +769,9 @@ func (reg *Registry) handlePutManifest(w http.ResponseWriter, r *http.Request, r
 		}
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
+	}
+	if reg.scanner.OnPush() {
+		reg.scanner.Enqueue(repo, mf.Digest)
 	}
 
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/manifests/%s", repo, mf.Digest))
@@ -942,4 +1004,69 @@ func (reg *Registry) gauges() metrics.Gauges {
 		}
 	}
 	return g
+}
+
+// applyProxyEnv creates or updates the cache projects of RGSTR_PROXIES.
+// They are edited in env: a project dropped from it stops being a cache
+// (its cached images stay).
+func applyProxyEnv(m *meta.Store, envs []config.ProxyEnv) error {
+	nameRe := regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	for _, e := range envs {
+		if !nameRe.MatchString(e.Name) {
+			return fmt.Errorf("project name %q: lowercase letters, digits and . _ - between them", e.Name)
+		}
+		if !strings.HasPrefix(e.URL, "https://") && !strings.HasPrefix(e.URL, "http://") {
+			return fmt.Errorf("%s: upstream %q is not a URL", e.Name, e.URL)
+		}
+	}
+	return m.Update(func(d *meta.Data) error {
+		if d.Projects == nil {
+			d.Projects = map[string]meta.Project{}
+		}
+		inEnv := map[string]bool{}
+		for _, e := range envs {
+			inEnv[e.Name] = true
+			p, ok := d.Projects[e.Name]
+			if !ok {
+				p = meta.Project{Name: e.Name, Members: map[string]string{}, CreatedAt: time.Now().UTC(),
+					Description: "Pull-through cache of " + e.URL}
+			}
+			p.Public = e.Public
+			p.Proxy = &meta.ProxyConfig{URL: e.URL, Username: e.Username, Password: e.Password, FromEnv: true}
+			d.Projects[e.Name] = p
+		}
+		for name, p := range d.Projects {
+			if p.Proxy != nil && p.Proxy.FromEnv && !inEnv[name] {
+				p.Proxy = nil
+				d.Projects[name] = p
+			}
+		}
+		return nil
+	})
+}
+
+// blockedPull explains why the project's policy refuses to serve this
+// image ("" when allowed): its scan found vulnerabilities at or above the
+// project's limit. Images not scanned yet are served; so is the scanner.
+func (reg *Registry) blockedPull(r *http.Request, repo string, d storage.Digest) string {
+	if reg.scanner == nil || auth.SubjectFromCtx(r.Context()) == scan.Subject {
+		return ""
+	}
+	name := meta.ProjectOf(repo)
+	if name == "" {
+		return ""
+	}
+	p, ok := reg.meta.Project(name)
+	if !ok || p.BlockSeverity == "" {
+		return ""
+	}
+	sum := reg.scanner.ImageSummary(repo, d)
+	if sum == nil || sum.Status != scan.StatusDone {
+		return ""
+	}
+	if n := sum.AtLeast(p.BlockSeverity); n > 0 {
+		return fmt.Sprintf("image %s has %d vulnerabilities of severity %s or worse; project %q refuses to serve it "+
+			"(see the image in the web admin)", d, n, p.BlockSeverity, name)
+	}
+	return ""
 }

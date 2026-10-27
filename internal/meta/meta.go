@@ -122,7 +122,25 @@ type Project struct {
 	Members     map[string]string `json:"members,omitempty"` // user → project role
 	QuotaBytes  int64             `json:"quota_bytes,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
+
+	// Proxy makes the project a read-only pull-through cache of another
+	// registry; nil: a normal project.
+	Proxy *ProxyConfig `json:"proxy,omitempty"`
+	// BlockSeverity refuses pulls of images with vulnerabilities of this
+	// severity or worse ("critical", "high", "medium", "low"); "": allowed.
+	BlockSeverity string `json:"block_severity,omitempty"`
 }
+
+// ProxyConfig is the upstream registry of a pull-through cache project.
+type ProxyConfig struct {
+	URL      string `json:"url"` // e.g. https://registry-1.docker.io
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"` // token or password
+	FromEnv  bool   `json:"from_env,omitempty"` // set by RGSTR_PROXIES; edited there
+}
+
+// Severities from the worst, as reported by the scanner.
+var Severities = []string{"critical", "high", "medium", "low"}
 
 // ProjectOf returns the project name a repository belongs to: its first
 // path segment, or "" for a repository without a slash.
@@ -139,7 +157,7 @@ func (s *Store) Project(name string) (Project, bool) {
 	defer s.mu.RUnlock()
 	p, ok := s.data.Projects[name]
 	if ok {
-		p.Members = copyMap(p.Members)
+		p = copyProject(p)
 	}
 	return p, ok
 }
@@ -150,11 +168,19 @@ func (s *Store) Projects() []Project {
 	defer s.mu.RUnlock()
 	out := make([]Project, 0, len(s.data.Projects))
 	for _, p := range s.data.Projects {
-		p.Members = copyMap(p.Members)
-		out = append(out, p)
+		out = append(out, copyProject(p))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+func copyProject(p Project) Project {
+	p.Members = copyMap(p.Members)
+	if p.Proxy != nil {
+		c := *p.Proxy
+		p.Proxy = &c
+	}
+	return p
 }
 
 func copyMap(m map[string]string) map[string]string {

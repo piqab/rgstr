@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"rgstr/internal/audit"
@@ -25,6 +26,16 @@ type projectInfo struct {
 	QuotaBytes  int64     `json:"quota_bytes"`
 	UsedBytes   int64     `json:"used_bytes"`
 	CreatedAt   time.Time `json:"created_at"`
+	// Proxy: a pull-through cache project (the password is never sent).
+	Proxy         *proxyInfo `json:"proxy,omitempty"`
+	BlockSeverity string     `json:"block_severity"`
+}
+
+type proxyInfo struct {
+	URL         string `json:"url"`
+	Username    string `json:"username,omitempty"`
+	HasPassword bool   `json:"has_password"`
+	FromEnv     bool   `json:"from_env"`
 }
 
 type memberInfo struct {
@@ -43,6 +54,11 @@ func (h *Handler) projectInfo(user string, p meta.Project, repos []string) proje
 		Name: p.Name, Description: p.Description, Public: p.Public,
 		MyRole: p.Members[user], CanManage: h.auth.IsProjectAdmin(user, p.Name),
 		Members: len(p.Members), QuotaBytes: p.QuotaBytes, CreatedAt: p.CreatedAt,
+		BlockSeverity: p.BlockSeverity,
+	}
+	if p.Proxy != nil {
+		info.Proxy = &proxyInfo{URL: p.Proxy.URL, Username: p.Proxy.Username,
+			HasPassword: p.Proxy.Password != "", FromEnv: p.Proxy.FromEnv}
 	}
 	for _, r := range repos {
 		if meta.ProjectOf(r) == p.Name {
@@ -116,6 +132,56 @@ type projectRequest struct {
 	QuotaBytes  *int64 `json:"quota_bytes"` // registry admins only
 	User        string `json:"user"`
 	Role        string `json:"role"`
+
+	// Pull-through cache (registry admins only): Proxy nil leaves it as
+	// is; URL "" makes the project a normal one. An empty password keeps
+	// the stored one.
+	Proxy         *proxyRequest `json:"proxy"`
+	BlockSeverity *string       `json:"block_severity"`
+}
+
+type proxyRequest struct {
+	URL      string `json:"url"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// applyProxy changes the cache settings of p; repos are its repositories.
+func applyProxy(p *meta.Project, req *proxyRequest, repos int) error {
+	if req == nil {
+		return nil
+	}
+	if p.Proxy != nil && p.Proxy.FromEnv {
+		return errors.New("this cache is configured in RGSTR_PROXIES; change it there")
+	}
+	if req.URL == "" {
+		p.Proxy = nil
+		return nil
+	}
+	if !strings.HasPrefix(req.URL, "https://") && !strings.HasPrefix(req.URL, "http://") {
+		return errors.New("the upstream must be a URL such as https://registry-1.docker.io")
+	}
+	if p.Proxy == nil && repos > 0 {
+		return errors.New("only an empty project can become a pull-through cache")
+	}
+	next := &meta.ProxyConfig{URL: strings.TrimSuffix(req.URL, "/"), Username: req.Username, Password: req.Password}
+	if next.Password == "" && p.Proxy != nil && next.Username == p.Proxy.Username {
+		next.Password = p.Proxy.Password
+	}
+	p.Proxy = next
+	return nil
+}
+
+func validSeverity(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, v := range meta.Severities {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -172,6 +238,15 @@ func (h *Handler) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 			if req.QuotaBytes != nil && *req.QuotaBytes > 0 {
 				p.QuotaBytes = *req.QuotaBytes
 			}
+			if err := applyProxy(&p, req.Proxy, 0); err != nil {
+				return err
+			}
+			if req.BlockSeverity != nil {
+				if !validSeverity(*req.BlockSeverity) {
+					return errors.New("severity must be critical, high, medium or low")
+				}
+				p.BlockSeverity = *req.BlockSeverity
+			}
 			d.Projects[req.Name] = p
 			return nil
 		})
@@ -183,6 +258,21 @@ func (h *Handler) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
 		if req.QuotaBytes != nil && !h.auth.IsAdmin(user) {
 			return "", errors.New("only registry administrators can change the quota")
 		}
+		if req.Proxy != nil && !h.auth.IsAdmin(user) {
+			// The upstream URL makes rgstr send requests: an administrator's call.
+			return "", errors.New("only registry administrators can change the pull-through cache")
+		}
+		if req.BlockSeverity != nil && !validSeverity(*req.BlockSeverity) {
+			return "", errors.New("severity must be critical, high, medium or low")
+		}
+		repos := 0
+		if all, err := h.store.ListRepositories(); err == nil {
+			for _, r := range all {
+				if meta.ProjectOf(r) == req.Name {
+					repos++
+				}
+			}
+		}
 		detail := fmt.Sprintf("public: %v", req.Public)
 		if req.QuotaBytes != nil {
 			detail += fmt.Sprintf(", quota: %d bytes", *req.QuotaBytes)
@@ -193,6 +283,12 @@ func (h *Handler) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
 				return errProjectNotFound
 			}
 			p.Description, p.Public = req.Description, req.Public
+			if err := applyProxy(&p, req.Proxy, repos); err != nil {
+				return err
+			}
+			if req.BlockSeverity != nil {
+				p.BlockSeverity = *req.BlockSeverity
+			}
 			if req.QuotaBytes != nil {
 				if *req.QuotaBytes < 0 {
 					return errors.New("quota must not be negative")

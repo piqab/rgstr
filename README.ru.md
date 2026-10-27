@@ -16,6 +16,8 @@
 - **Cross-repo mount** — мгновенное монтирование blob'а из другого репозитория без передачи данных (при наличии права pull на исходный репозиторий)
 - **Garbage collection** — периодическая очистка образов без тегов, их blob'ов и зависших сессий загрузки; не мешает идущему push
 - **Bearer token auth** — JWT (HS256) по Docker auth specification, Basic auth на токен-эндпоинте
+- **Pull-through кеш** — проекты-кеши Docker Hub, GHCR или любого реестра: без лимитов pull, быстрее CI, образы доступны, когда upstream лежит
+- **Сканирование уязвимостей** — встроенный Trivy: отчёты в веб-админке, запрет pull уязвимых образов по проекту
 - **Кластер (HA)** — несколько процессов на S3 и PostgreSQL принимают push и pull; падение любого не останавливает реестр
 - **Бэкапы в S3 или директорию** — по расписанию, на работающем реестре, с ротацией и восстановлением одной командой
 - **LDAP, Active Directory и единый вход (OIDC)** — вход по паролю из каталога или через Keycloak, Authentik, Entra ID, Google; роли по группам
@@ -226,6 +228,8 @@ cp .env.example .env
 | `RGSTR_STORAGE_DRIVER` | `filesystem` | `filesystem` или `s3` (см. [Кластер](#кластер-ha)) |
 | `RGSTR_STORAGE_S3_*` | — | Бакет для данных при `RGSTR_STORAGE_DRIVER=s3` |
 | `RGSTR_DATABASE_URL` | — | PostgreSQL: включает режим кластера |
+| `RGSTR_PROXIES`, `RGSTR_PROXY_*` | — | Проекты pull-through кеша (см. [Pull-through кеш](#pull-through-кеш)) |
+| `RGSTR_SCAN_*` | — | Сканирование уязвимостей (см. [Сканирование уязвимостей](#сканирование-уязвимостей)) |
 | `RGSTR_BACKUP_*` | — | Бэкапы по расписанию в S3 или директорию (см. [Бэкапы](#бэкапы)) |
 | `RGSTR_LDAP_*` | — | Вход по паролю LDAP / Active Directory (см. [LDAP](#ldap-и-active-directory)) |
 | `RGSTR_OIDC_*` | — | Вход в веб-админку через OpenID Connect (см. [Единый вход](#единый-вход-oidc)) |
@@ -621,6 +625,88 @@ RGSTR_OIDC_NAME=Keycloak
 RGSTR_OIDC_ADMIN_GROUPS=registry-admins
 ```
 
+## Pull-through кеш
+
+Проект может быть кешем другого реестра только для чтения (Docker Hub,
+GHCR, Quay, другой rgstr): первый pull образа скачивает его из upstream и
+сохраняет, следующие отдаются отсюда. Это обходит лимиты pull Docker Hub,
+ускоряет CI и оставляет образы доступными, когда upstream недоступен.
+
+```bash
+docker pull registry.example.com/dockerhub/library/nginx:1.27   # = docker.io/library/nginx:1.27
+docker pull registry.example.com/ghcr/piqab/rgstr:1.9           # = ghcr.io/piqab/rgstr:1.9
+```
+
+- **Теги** перепроверяются в upstream не чаще раза в `RGSTR_PROXY_TTL` (5 мин)
+  запросом HEAD, который Docker Hub не считает в лимит; образы по digest и
+  слои не меняются и скачиваются один раз.
+- **Слои** отдаются клиенту одновременно с сохранением: первый pull не медленнее
+  pull напрямую из upstream.
+- **Если upstream недоступен** или упёрся в лимит, закешированные образы
+  отдаются как есть; ошибку (`502`, или `429` от лимита) получают только
+  образы, которые ещё никто не скачивал.
+- **Мультиплатформенные образы:** скачиваются только платформы, которые
+  запрашивают клиенты.
+- **Только чтение:** push в проект-кеш отклоняется. Доступ — как в любом
+  проекте (участники, роли, публичность). Старые образы удаляются
+  [политиками хранения](#get-ui) или вручную.
+
+Кеш настраивается в веб-админке (Проекты → Новый проект → «Pull-through кеш
+другого реестра», только администраторы) или в env:
+
+```bash
+RGSTR_PROXIES=dockerhub=https://registry-1.docker.io,ghcr=https://ghcr.io
+RGSTR_PROXY_DOCKERHUB_USERNAME=me             # необязательно: выше лимиты Docker Hub
+RGSTR_PROXY_DOCKERHUB_PASSWORD=dckr_pat_…     # пароль или токен доступа
+RGSTR_PROXY_DOCKERHUB_PUBLIC=true             # анонимный pull
+RGSTR_PROXY_TTL=5m
+```
+
+Проекты из `RGSTR_PROXIES` создаются при запуске и меняются там.
+В Docker Hub имена из одного сегмента живут в `library/` (`dockerhub/nginx`
+— это тоже `docker.io/library/nginx`).
+
+Для containerd (узлы Kubernetes) кеш может заменить Docker Hub в
+`/etc/containerd/certs.d/docker.io/hosts.toml`:
+
+```toml
+server = "https://registry-1.docker.io"
+
+[host."https://registry.example.com/v2/dockerhub"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+```
+
+## Сканирование уязвимостей
+
+С `RGSTR_SCAN_ENABLED=true` образы сканируются
+[Trivy](https://trivy.dev) (встроен в Docker-образ): при push и попадании в
+кеш, по запросу (кнопка «Сканировать» на странице образа) и повторно раз в
+`RGSTR_SCAN_INTERVAL` — база уязвимостей узнаёт новые. Страница образа
+показывает находки (уровень, пакет, установленная версия и версия с
+исправлением, ссылки), у тегов в списке репозиториев — худший уровень.
+
+Проект может запрещать pull уязвимых образов (настройки проекта → «Уязвимые
+образы», например «Запрещать pull с критическими уязвимостями»). Клиент
+получает `403 denied` с причиной. Ещё не просканированные образы отдаются.
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `RGSTR_SCAN_ENABLED` | `false` | Включить сканирование |
+| `RGSTR_SCAN_ON_PUSH` | `true` | Сканировать новые образы (запушенные или закешированные) |
+| `RGSTR_SCAN_INTERVAL` | `24h` | Как часто пересканировать образы с тегами |
+| `RGSTR_SCAN_CONCURRENCY` | `1` | Сколько сканов одновременно |
+| `RGSTR_SCAN_TIMEOUT` | `15m` | Ограничение одного скана |
+| `RGSTR_SCAN_TRIVY` | `trivy` | Бинарник Trivy (в образе: `/usr/local/bin/trivy`) |
+| `RGSTR_SCAN_TRIVY_SERVER` | — | Сервер Trivy (`trivy server`) с базой — режим клиент/сервер |
+| `RGSTR_SCAN_CACHE_DIR` | `<RGSTR_STORAGE>/.trivy` | База Trivy (около 70 МБ, скачивается при первом скане; в бэкап не входит) |
+
+rgstr запускает `trivy image` против самого себя с короткоживущим токеном на
+pull, поэтому сканирование работает с любым драйвером хранилища и в кластере
+(отчёты хранятся рядом с данными). Собственные настройки Trivy
+(`TRIVY_DB_REPOSITORY` для зеркала базы, `TRIVY_OFFLINE_SCAN`, прокси)
+передаются через окружение. Отчёты удалённых образов удаляет сборка мусора.
+
 ## Кластер (HA)
 
 Несколько процессов rgstr работают как один реестр: любой принимает push и
@@ -1004,6 +1090,8 @@ https://registry.example.com/ui
 | `GET` | `/ui/api/backup` | Настройки, состояние и список бэкапов (администратор) |
 | `POST` | `/ui/api/backup/run` | Запустить бэкап сейчас, ответ `202` (администратор) |
 | `POST` | `/ui/api/cli-secret` | Новый CLI-секрет для docker login (пользователи LDAP и SSO) |
+| `GET` | `/ui/api/scan?repo=&ref=` | Сводка и находки сканирования образа (`&platform=` — одна платформа индекса) |
+| `POST` | `/ui/api/scan/run` | `{"repo","digest"}` — сканировать сейчас (пользователи с правом push) |
 | `GET` | `/ui/api/policies` | Правила хранения и неизменяемости, история применения (администратор) |
 | `POST` | `/ui/api/policies/retention` | `{"rules":[{"repos","tags","keep_last","keep_days","disabled"}]}` — заменить правила хранения |
 | `POST` | `/ui/api/policies/retention/run` | `{"dry_run"}` — применить правила хранения сейчас |

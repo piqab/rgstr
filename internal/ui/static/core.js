@@ -500,9 +500,21 @@ const App = (() => {
   // Registry host as clients address it, for docker commands.
   function registryHost() { return location.host; }
 
+  // vulnBadge summarises an image's latest vulnerability scan.
+  const severities = ['critical', 'high', 'medium', 'low', 'unknown'];
+  function vulnBadge(v) {
+    if (!v) return '';
+    if (v.status === 'running') return `<span class="badge">${esc(t('vuln.scanning'))}</span>`;
+    if (v.status === 'error') return `<span class="badge badge-warn" title="${esc(v.error || '')}">${esc(t('vuln.error'))}</span>`;
+    const worst = severities.find(s => (v.counts || {})[s] > 0);
+    if (!worst) return `<span class="badge badge-ok">${esc(t('vuln.none'))}</span>`;
+    return `<span class="badge sev-${worst}" title="${esc(severities.filter(s => (v.counts || {})[s]).map(s => v.counts[s] + ' ' + t('sevn.' + s)).join(', '))}">${esc(v.counts[worst] + ' ' + t('sevn.' + worst))}</span>`;
+  }
+
   return {
     boot, api, post, page, route, t, addLang, setLang, lang: () => lang, langs: () => Object.keys(langs),
     session, openModal, closeModal, confirmDialog, copyText, esc, fmtBytes, fmtTime, fmtAgo, toast, registryHost, $,
+    vulnBadge, severities,
   };
 })();
 
@@ -563,4 +575,17 @@ App.addLang('en', {
   'time.day': '{n} d ago',
   'disk.lowBanner': 'Low disk space: {free} free of {total}.',
   'disk.lowAction': 'Free space →',
+  'vuln.scanning': 'scanning…',
+  'vuln.error': 'scan failed',
+  'vuln.none': 'no vulnerabilities',
+  'sev.critical': 'critical',
+  'sev.high': 'high',
+  'sev.medium': 'medium',
+  'sev.low': 'low',
+  'sev.unknown': 'unknown',
+  'sevn.critical': 'critical',
+  'sevn.high': 'high',
+  'sevn.medium': 'medium',
+  'sevn.low': 'low',
+  'sevn.unknown': 'unknown',
 });

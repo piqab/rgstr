@@ -16,6 +16,8 @@ Compatible with `docker push` / `docker pull`, `crane`, `skopeo`, `containerd` a
 - **Cross-repo mount** — instantly mount a blob from another repository without transferring data (requires pull permission on the source repository)
 - **Garbage collection** — periodic cleanup of untagged images, their blobs and stale upload sessions; does not interfere with a push in progress
 - **Bearer token auth** — JWT (HS256) per the Docker auth specification, Basic auth on the token endpoint
+- **Pull-through cache** — projects that cache Docker Hub, GHCR or any registry: no pull limits, faster CI, images available when the upstream is down
+- **Vulnerability scanning** — Trivy built in: reports in the web admin, pulls of vulnerable images refused per project
 - **Cluster (HA)** — several processes on S3 and PostgreSQL accept push and pull; the failure of any one of them does not stop the registry
 - **Backups to S3 or a directory** — on a schedule, on a running registry, with rotation and one-command restore
 - **LDAP, Active Directory and single sign-on (OIDC)** — sign in with a directory password or through Keycloak, Authentik, Entra ID, Google; roles from groups
@@ -226,6 +228,8 @@ cp .env.example .env
 | `RGSTR_STORAGE_DRIVER` | `filesystem` | `filesystem` or `s3` (see [Cluster](#cluster-ha)) |
 | `RGSTR_STORAGE_S3_*` | — | Data bucket when `RGSTR_STORAGE_DRIVER=s3` |
 | `RGSTR_DATABASE_URL` | — | PostgreSQL: enables cluster mode |
+| `RGSTR_PROXIES`, `RGSTR_PROXY_*` | — | Pull-through cache projects (see [Pull-through cache](#pull-through-cache)) |
+| `RGSTR_SCAN_*` | — | Vulnerability scanning (see [Vulnerability scanning](#vulnerability-scanning)) |
 | `RGSTR_BACKUP_*` | — | Scheduled backups to S3 or a directory (see [Backups](#backups)) |
 | `RGSTR_LDAP_*` | — | Password sign-in via LDAP / Active Directory (see [LDAP](#ldap-and-active-directory)) |
 | `RGSTR_OIDC_*` | — | Web admin sign-in via OpenID Connect (see [Single sign-on](#single-sign-on-oidc)) |
@@ -621,6 +625,88 @@ RGSTR_OIDC_NAME=Keycloak
 RGSTR_OIDC_ADMIN_GROUPS=registry-admins
 ```
 
+## Pull-through cache
+
+A project can be a read-only cache of another registry (Docker Hub, GHCR,
+Quay, another rgstr): the first pull of an image fetches it from the
+upstream and stores it, later pulls are served locally. This gets around
+Docker Hub's pull limits, speeds up CI and keeps images available when the
+upstream is down.
+
+```bash
+docker pull registry.example.com/dockerhub/library/nginx:1.27   # = docker.io/library/nginx:1.27
+docker pull registry.example.com/ghcr/piqab/rgstr:1.9           # = ghcr.io/piqab/rgstr:1.9
+```
+
+- **Tags** are re-checked upstream at most every `RGSTR_PROXY_TTL` (5 min) with a
+  HEAD request, which Docker Hub does not count against its pull limit;
+  images by digest and layers never change and are fetched once.
+- **Layers** are streamed to the client while they are stored: the first pull
+  is not slower than pulling from the upstream directly.
+- **When the upstream is down** or rate-limits, cached images are served as they
+  are; only images never pulled fail (`502`, or `429` from the rate limit).
+- **Multi-platform images:** only the platforms clients pull are downloaded.
+- **Read-only:** pushing into a cache project is refused. Access works as in
+  any project (members, roles, public). Old images can be removed with
+  [retention policies](#get-ui) or by hand.
+
+Set up a cache in the web admin (Projects → New project → "Pull-through
+cache of another registry", administrators only) or in env:
+
+```bash
+RGSTR_PROXIES=dockerhub=https://registry-1.docker.io,ghcr=https://ghcr.io
+RGSTR_PROXY_DOCKERHUB_USERNAME=me             # optional: higher Docker Hub limits
+RGSTR_PROXY_DOCKERHUB_PASSWORD=dckr_pat_…     # password or access token
+RGSTR_PROXY_DOCKERHUB_PUBLIC=true             # anonymous pull
+RGSTR_PROXY_TTL=5m
+```
+
+Projects from `RGSTR_PROXIES` are created at startup and edited there.
+On Docker Hub single-segment names live under `library/` (`dockerhub/nginx`
+is `docker.io/library/nginx` too).
+
+For containerd (Kubernetes nodes) the cache can stand in for Docker Hub in
+`/etc/containerd/certs.d/docker.io/hosts.toml`:
+
+```toml
+server = "https://registry-1.docker.io"
+
+[host."https://registry.example.com/v2/dockerhub"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+```
+
+## Vulnerability scanning
+
+With `RGSTR_SCAN_ENABLED=true` images are scanned with
+[Trivy](https://trivy.dev) (built into the Docker image): when they are
+pushed or cached, on demand ("Scan" on the image page), and again every
+`RGSTR_SCAN_INTERVAL` as the vulnerability database learns new
+vulnerabilities. The image page shows the findings (severity, package,
+installed and fixed versions, links); tags in the repository list show the
+worst severity.
+
+A project can refuse pulls of vulnerable images (project settings →
+"Vulnerable images", e.g. "refuse pulls with critical vulnerabilities").
+Clients get `403 denied` with the reason. Images not scanned yet are served.
+
+| Variable | Default | Description |
+|---|---|---|
+| `RGSTR_SCAN_ENABLED` | `false` | Turn on scanning |
+| `RGSTR_SCAN_ON_PUSH` | `true` | Scan new images (pushed or cached) |
+| `RGSTR_SCAN_INTERVAL` | `24h` | Rescan tagged images this often |
+| `RGSTR_SCAN_CONCURRENCY` | `1` | Scans at a time |
+| `RGSTR_SCAN_TIMEOUT` | `15m` | Limit for one scan |
+| `RGSTR_SCAN_TRIVY` | `trivy` | The Trivy binary (in the image: `/usr/local/bin/trivy`) |
+| `RGSTR_SCAN_TRIVY_SERVER` | — | A Trivy server (`trivy server`) holding the database, for client/server mode |
+| `RGSTR_SCAN_CACHE_DIR` | `<RGSTR_STORAGE>/.trivy` | Trivy's database (about 70 MB, downloaded on the first scan; not backed up) |
+
+rgstr runs `trivy image` against itself with a short-lived pull token, so
+it works with every storage driver and in a cluster (reports are stored next
+to the data). Trivy's own settings (`TRIVY_DB_REPOSITORY` for a mirror of the
+database, `TRIVY_OFFLINE_SCAN`, proxies) are passed through the environment.
+Reports of deleted images are removed by garbage collection.
+
 ## Cluster (HA)
 
 Several rgstr processes work as a single registry: any of them accepts push and
@@ -1004,6 +1090,8 @@ The UI gets its data in a single request:
 | `GET` | `/ui/api/backup` | Backup settings, status and list (administrator) |
 | `POST` | `/ui/api/backup/run` | Start a backup now, responds `202` (administrator) |
 | `POST` | `/ui/api/cli-secret` | New CLI secret for docker login (LDAP and SSO users) |
+| `GET` | `/ui/api/scan?repo=&ref=` | Vulnerability summary and findings of an image (`&platform=` for one platform of an index) |
+| `POST` | `/ui/api/scan/run` | `{"repo","digest"}` — scan now (users who may push) |
 | `GET` | `/ui/api/policies` | Retention and immutability rules, run history (administrator) |
 | `POST` | `/ui/api/policies/retention` | `{"rules":[{"repos","tags","keep_last","keep_days","disabled"}]}` — replace retention rules |
 | `POST` | `/ui/api/policies/retention/run` | `{"dry_run"}` — apply retention rules now |

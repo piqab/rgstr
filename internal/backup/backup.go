@@ -193,11 +193,12 @@ func (r *Runner) prune(ctx context.Context) error {
 }
 
 // skip reports top-level entries of the storage root that are not backed
-// up: unfinished uploads, the process lock and restore leftovers.
+// up: unfinished uploads, the process lock, Trivy's database and restore
+// leftovers.
 func skip(rel string) bool {
 	top, _, _ := strings.Cut(rel, "/")
 	base := filepath.Base(rel)
-	return top == "uploads" || top == ".rgstr.lock" || strings.HasPrefix(top, ".restore-") ||
+	return top == "uploads" || top == ".rgstr.lock" || top == ".trivy" || strings.HasPrefix(top, ".restore-") ||
 		strings.HasPrefix(top, ".before-restore-") || strings.HasSuffix(base, ".tmp") ||
 		strings.HasPrefix(base, ".tmp-")
 }

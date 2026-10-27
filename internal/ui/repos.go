@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"rgstr/internal/ops"
+	"rgstr/internal/scan"
 	"rgstr/internal/storage"
 )
 
@@ -31,6 +32,7 @@ type tagInfo struct {
 	PushedAt  time.Time      `json:"pushed_at"`
 	Immutable bool           `json:"immutable,omitempty"`
 	Error     string         `json:"error,omitempty"`
+	Vulns     *scan.Summary  `json:"vulns,omitempty"` // latest scan; nil: not scanned
 }
 
 type repoInfo struct {
@@ -239,6 +241,7 @@ func (h *Handler) describeTag(repo, tag string) tagInfo {
 	}
 	info.Digest = string(m.Digest)
 	info.MediaType = m.ContentType
+	info.Vulns = h.scanner.ImageSummary(repo, m.Digest)
 
 	var doc manifestDoc
 	if err := json.Unmarshal(m.Content, &doc); err != nil {

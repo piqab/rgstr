@@ -350,6 +350,9 @@ func (h *Handler) Can(subject, repo, action string) bool {
 	if !h.cfg.AuthEnabled {
 		return true
 	}
+	if subject == ScannerSubject { // rgstr's own scanner, with a token rgstr signed
+		return action == "pull"
+	}
 	if action == "pull" && h.isPublicRepo(repo) {
 		return true
 	}
@@ -416,6 +419,10 @@ func (h *Handler) IsAdmin(subject string) bool {
 }
 
 // ─── Robot accounts ──────────────────────────────────────────────────────────
+
+// ScannerSubject is the token subject of rgstr's vulnerability scanner.
+// It cannot be a user name (names start with a letter or digit).
+const ScannerSubject = "@scanner"
 
 // IsRobot reports whether name is a robot account.
 func IsRobot(name string) bool { return strings.HasPrefix(name, meta.RobotPrefix) }
