@@ -19,8 +19,9 @@
 - **LDAP, Active Directory и единый вход (OIDC)** — вход по паролю из каталога или через Keycloak, Authentik, Entra ID, Google; роли по группам
 - **Публичные и приватные репозитории** — гибкий контроль доступа через glob-паттерны, анонимный pull без авторизации
 - **Range downloads** — поддержка HTTP `Range` заголовка при скачивании слоёв
-- **Без внешних зависимостей рантайма** — один статический бинарь, нет баз данных, нет сторонних сервисов
-- **Безопасность от гонок** — `sync.RWMutex` + per-digest и per-upload локи
+- **Kubernetes** — [оператор rgstroperator](https://github.com/piqab/rgstroperator): реестр, том, Ingress с TLS, метрики, бэкапы и кластер одним ресурсом
+- **Без внешних зависимостей рантайма** — один статический бинарь; базы данных и сторонние сервисы нужны только для кластера (PostgreSQL и S3)
+- **Безопасность от гонок** — `sync.RWMutex` + per-digest и per-upload локи; в кластере — общая блокировка в PostgreSQL
 
 ### Ограничения
 
@@ -153,6 +154,14 @@ docker run -d \
   -p 5000:5000 \
   -v /srv/registry:/data \
   ghcr.io/piqab/rgstr:latest
+```
+
+### Вариант 4: Kubernetes
+
+[rgstroperator](https://github.com/piqab/rgstroperator) разворачивает rgstr ресурсом `Registry`: том, секрет с временным паролем администратора, Ingress с TLS, метрики, бэкапы, LDAP/OIDC и кластер из нескольких реплик.
+
+```bash
+helm install rgstroperator oci://ghcr.io/piqab/charts/rgstroperator -n rgstroperator-system --create-namespace
 ```
 
 ### Проверка
@@ -915,6 +924,7 @@ make release            # Все платформы сразу
 |---|---|---|
 | `GET` | `/v2/` | Проверка версии API |
 | `GET` | `/healthz` | Health check и версия (без аутентификации) |
+| `GET` | `/readyz` | Готовность: доступны хранилище и (в кластере) база; `503`, если нет. Для балансировщика (без аутентификации) |
 | `GET` | `/ui` | Веб-интерфейс |
 | `GET` | `/stats` | Статистика репозиториев и pulls |
 | `GET`, `POST` | `/v2/auth` | Получение Bearer токена (GET с query или POST-форма OAuth2, как у containerd) |
@@ -944,7 +954,7 @@ https://registry.example.com/ui
 ```
 
 Возможности:
-- Версия реестра — внизу каждой страницы и на форме входа (а также в ответе `/healthz`: `{"status":"ok","version":"v1.5.0"}`)
+- Версия реестра — внизу каждой страницы и на форме входа (а также в ответе `/healthz`: `{"status":"ok","version":"v1.9.1"}`)
 - Русский и английский интерфейс: язык берётся из браузера, переключается в шапке и на форме входа и запоминается
 - Смена пароля (кнопка «Change password» в шапке) для любого пользователя. Новый пароль хранится в виде bcrypt-хеша в `<RGSTR_STORAGE>/users.json` и действует и для `docker login`
 - Вход теми же пользователями, что и для `docker login`. Форма входа отправляется обычным образом (`POST /ui/login`), поэтому браузер предлагает сохранить логин и пароль, а после смены пароля — обновить его. В браузере хранится только токен сессии, пароль — нет
@@ -1052,22 +1062,35 @@ curl -u alice:secret https://registry.example.com/stats
 ## Структура хранилища
 
 ```
-<RGSTR_STORAGE>/
+<RGSTR_STORAGE>/                    # или бакет S3 (RGSTR_STORAGE_S3_*): те же пути — ключи объектов
 ├── blobs/
 │   └── sha256/
 │       └── <2 hex>/<62 hex>        # содержимое blob'а (адресация по digest)
 ├── uploads/
 │   └── <uuid>/
-│       ├── data                    # накопленные байты незавершённой загрузки
-│       └── info.json               # uuid, repo, offset, started_at
-└── repositories/
-    └── <namespace>/<repo>/
-        ├── manifests/
-        │   ├── by-digest/<hex>     # содержимое манифеста + content-type
-        │   └── tags/<tag>          # hex-digest тега (указатель)
-        └── layers/
-            └── <hex>               # пустой маркер: blob принадлежит репозиторию
+│       ├── chunk-<смещение>        # части незавершённой загрузки, по одной на PATCH
+│       └── info.json               # uuid, repo, offset, started_at, состояние sha256
+├── repositories/
+│   └── <namespace>/<repo>/
+│       ├── manifests/
+│       │   ├── by-digest/<hex>     # содержимое манифеста + content-type
+│       │   └── tags/<tag>          # hex-digest тега (указатель)
+│       └── layers/
+│           └── <hex>               # пустой маркер: blob принадлежит репозиторию
+├── users.json                      # пользователи из админки и сменённые пароли (bcrypt)
+├── meta.json                       # проекты, роботы, политики, webhooks, настройки, сессии, история GC
+├── audit.log, audit.log.1          # журнал (JSON по строке), ротация по 10 МБ
+├── stats.json                      # счётчики pull
+└── .rgstr.lock                     # блокировка: один процесс на каталог
 ```
+
+В [режиме кластера](#кластер-ha) `users.json`, `meta.json`, журнал и счётчики
+хранятся в PostgreSQL (таблицы `rgstr_docs`, `rgstr_audit`, `rgstr_pulls`,
+`rgstr_jobs`), а не в файлах; блокировки каталога нет.
+
+Загрузка, начатая на одном процессе, продолжается на любом: каждая часть
+сохраняется отдельно вместе с состоянием sha256, а при завершении части
+склеиваются в blob (в S3 — копированием на стороне хранилища).
 
 Дедупликация работает автоматически: если два репозитория содержат одинаковый слой, на диске он хранится один раз.
 
@@ -1077,22 +1100,29 @@ curl -u alice:secret https://registry.example.com/stats
 
 ## Сборка и тесты
 
+Нужен Go 1.26+.
+
 ```bash
-# Зависимости
-go mod tidy
-
-# Сборка
-make build
-
-# Все тесты (unit + интеграционные)
-make test
-
-# С покрытием
-make cover
-
-# Очистка
+make build      # сборка
+make test       # unit- и интеграционные тесты
+make cover      # с покрытием
 make clean
 ```
+
+Тесты кластера идут на настоящих PostgreSQL и S3 и запускаются, только когда
+заданы адреса (так их запускает CI):
+
+```bash
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=rgstr postgres:16-alpine
+# S3: SeaweedFS (или MinIO) с бакетом rgstr-test и ключами
+RGSTR_TEST_DATABASE_URL='postgres://postgres:pw@localhost:5432/rgstr?sslmode=disable' \
+RGSTR_TEST_S3=http://localhost:9000 RGSTR_TEST_S3_KEY=… RGSTR_TEST_S3_SECRET=… \
+  go test ./internal/db ./internal/storage ./internal/backup ./test/ha
+```
+
+`test/ha` запускает три процесса rgstr под нагрузкой push и pull и убивает их
+`kill -9` по одному (`RGSTR_TEST_HA_DURATION`, по умолчанию 40 с); образы
+проверяются по digest.
 
 ---
 
@@ -1100,7 +1130,7 @@ make clean
 
 Сборка настроена в `.github/workflows/`:
 
-- `ci.yml` — `go vet` и тесты на каждый push в `main` и pull request;
+- `ci.yml` — на каждый push в `main` и pull request: `go vet`, govulncheck (уязвимости в вызываемом коде), тесты; задача `cluster` — тесты кластера на PostgreSQL и SeaweedFS (S3), включая нагрузочный `test/ha`;
 - `release.yml` — сборка и публикация:
   - push в `main` → образ `ghcr.io/piqab/rgstr:main`;
   - тег `v*` → GitHub Release с бинарниками `rgstr-linux-{amd64,arm64}`, `mkpasswd-linux-{amd64,arm64}` и архивами `rgstr-<версия>-linux-{amd64,arm64}.tar.gz` (у каждого файла есть `.sha256`) и образ `:<версия>`, `:<major>.<minor>`, `:latest`.
@@ -1123,29 +1153,43 @@ git tag v$(cat VERSION) && git push origin v$(cat VERSION)
 ## Архитектура
 
 ```
-main.go
-└── internal/
-    ├── config/      — конфигурация из env vars
-    ├── auth/
-    │   ├── token.go      — JWT (HS256): выдача и верификация
-    │   └── middleware.go — HTTP middleware: Bearer/Basic, /v2/auth эндпоинт
-    ├── storage/
-    │   ├── storage.go    — content-addressable хранилище, upload-сессии, манифесты
-    │   └── gc.go         — mark-and-sweep GC: всё, что достижимо от тегов, плюс недавние загрузки
-    └── registry/
-        ├── registry.go   — HTTP handlers, роутинг
-        └── errors.go     — OCI error codes
+main.go, cli.go     — запуск сервера; команды backup, backups, restore, migrate, version
+internal/
+├── config/    — конфигурация из переменных окружения
+├── registry/  — HTTP API реестра (/v2), роутинг, /healthz, /readyz, /stats
+├── storage/   — content-addressable хранилище: blob'ы, загрузки, манифесты, GC
+│                поверх драйвера: файловая система или S3
+├── s3/        — клиент S3 (подпись SigV4, multipart, копирование, presigned URL)
+├── db/        — PostgreSQL кластера: общие документы, журнал, счётчики,
+│                блокировка GC, захват плановых задач
+├── auth/      — токены (JWT), пользователи и роли, сессии, LDAP, OIDC, роботы
+├── meta/      — метаданные админки: проекты, политики, webhooks, настройки
+├── ops/       — операции админки (удаление, retention) с журналом и webhooks
+├── maint/     — расписание GC и retention
+├── policy/    — правила хранения тегов и неизменяемые теги
+├── backup/    — бэкапы по расписанию и восстановление (одиночный режим)
+├── audit/     — журнал действий
+├── stats/     — счётчики pull
+├── metrics/   — метрики Prometheus
+├── webhook/   — уведомления о событиях
+├── glob/      — паттерны репозиториев
+└── ui/        — веб-админка (встроенный SPA на JS) и её API
 ```
 
 ### Модель блокировок
 
 | Блокировка | Тип | Защищает |
 |---|---|---|
-| `gcMu` | `sync.RWMutex` | Все операции держат RLock; GC держит Lock — исключает гонку GC с записью |
+| `gcMu` | `sync.RWMutex` | Операции процесса держат RLock; GC держит Lock — исключает гонку GC с записью |
+| Блокировка GC в PostgreSQL | advisory lock | В кластере: запись, которая делает данные достижимыми (манифест, связь blob'а с репозиторием, завершение загрузки), держит её разделяемо, GC — эксклюзивно, во всех процессах сразу |
 | `blobMu[digest]` | `sync.Map[*sync.Mutex]` | Параллельная запись одного blob'а — только первый горутин пишет, остальные видят готовый файл |
 | `uploadMu[uuid]` | `sync.Map[*sync.Mutex]` | Параллельные PATCH-чанки одной сессии — сериализует запись смещения |
+| Строка документа в PostgreSQL | `SELECT … FOR UPDATE` | В кластере: изменение пользователей и метаданных применяется к последней версии, ничего не теряется |
+| `.rgstr.lock` | `flock` | Одиночный режим: второй процесс на том же каталоге не запустится |
 
-Все записи используют `atomicWrite` (write to temp → `os.Rename`) — читатели никогда не видят частично записанный файл.
+Все записи атомарны: на диске — запись во временный файл и `os.Rename`, в S3 —
+объект появляется только целиком. Читатели никогда не видят частично
+записанный файл.
 
 ---
 
