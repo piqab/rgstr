@@ -23,6 +23,12 @@ func main() {
 	cfg := config.Load()
 	cfg.Version = displayVersion(version)
 
+	unlock, err := storage.Lock(cfg.StorageRoot)
+	if err != nil {
+		log.Fatalf("storage: %v", err)
+	}
+	defer unlock()
+
 	store, err := storage.NewFilesystem(cfg.StorageRoot, cfg)
 	if err != nil {
 		log.Fatalf("storage init: %v", err)
