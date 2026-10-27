@@ -24,7 +24,7 @@
           <tr>
             <td><b class="mono">${esc(r.name)}</b>${r.description ? `<div class="muted small">${esc(r.description)}</div>` : ''}
               <div class="muted small">${esc(t('robots.created', {time: fmtTime(r.created_at), user: r.created_by || '—'}))}</div></td>
-            <td>${r.permissions.map(p => `<div class="small"><b>${esc(p.project === '*' ? t('robots.allRepos') : p.project)}</b>: ${p.actions.map(a => `<span class="badge">${esc(a)}</span>`).join(' ')}</div>`).join('')}</td>
+            <td>${r.permissions.map(p => `<div class="small"><b>${esc(p.project === '*' ? t('robots.allRepos') : p.project)}</b>${p.repos ? ` <span class="mono">${esc(p.repos)}</span>` : ''}: ${p.actions.map(a => `<span class="badge">${esc(a)}</span>`).join(' ')}</div>`).join('')}</td>
             <td>${r.expires_at ? esc(fmtTime(r.expires_at)) : esc(t('robots.never'))}</td>
             <td>${r.expired ? `<span class="badge badge-err">${esc(t('robots.expired'))}</span>`
               : r.disabled ? `<span class="badge">${esc(t('robots.disabled'))}</span>`
@@ -55,6 +55,8 @@
     return `<div class="perm-row toolbar" style="margin-bottom:8px">
       <select name="project" style="width:auto;margin:0">${opts.map(o =>
         `<option value="${esc(o)}" ${o === p.project ? 'selected' : ''}>${esc(o === '*' ? t('robots.allRepos') : o)}</option>`).join('')}</select>
+      <input name="repos" value="${esc(p.repos || '')}" placeholder="${esc(t('robots.reposPlaceholder'))}"
+        title="${esc(t('robots.reposHint'))}" style="width:150px;margin:0">
       ${['pull', 'push', 'delete'].map(a => `<label class="check" style="margin:0"><input type="checkbox" value="${a}" ${p.actions.includes(a) ? 'checked' : ''}>${a}</label>`).join('')}
       <button type="button" class="btn btn-sm" data-remove-perm>✕</button>
     </div>`;
@@ -99,6 +101,7 @@
       const f = e.target.elements;
       const permissions = [...m.querySelectorAll('.perm-row')].map(row => ({
         project: row.querySelector('select').value,
+        repos: row.querySelector('[name=repos]').value.trim(),
         actions: [...row.querySelectorAll('input:checked')].map(c => c.value),
       }));
       const body = {name: isNew ? f.rname.value.trim() : r.name, description: f.description.value.trim(), permissions};
@@ -162,6 +165,8 @@ App.addLang('en', {
   'robots.permissions': 'Permissions',
   'robots.allRepos': 'all repositories',
   'robots.addPerm': '+ permission',
+  'robots.reposPlaceholder': 'every repository',
+  'robots.reposHint': 'Optional: only repositories matching this pattern, e.g. app-* or web/** (within the project; with "all repositories" the full name)',
   'robots.expires': 'Expires',
   'robots.never': 'never',
   'robots.days': 'in {n} days',
@@ -195,6 +200,8 @@ App.addLang('ru', {
   'robots.permissions': 'Права',
   'robots.allRepos': 'все репозитории',
   'robots.addPerm': '+ право',
+  'robots.reposPlaceholder': 'все репозитории',
+  'robots.reposHint': 'Необязательно: только репозитории по шаблону, например app-* или web/** (внутри проекта; для «все репозитории» — полное имя)',
   'robots.expires': 'Срок действия',
   'robots.never': 'бессрочно',
   'robots.days': '{n} дней',

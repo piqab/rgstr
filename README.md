@@ -32,6 +32,7 @@ Compatible with `docker push` / `docker pull`, `crane`, `skopeo`, `containerd` a
 - **High availability requires [cluster mode](#cluster-ha)** (S3 and PostgreSQL).
   Without it, rgstr is a single process on a data directory (a second one will not start, see
   [the lock](#configuration)): a restart means a short downtime.
+- **Roles** — four project roles and three global ones; custom roles cannot be defined. Access can be given per project or per repository pattern within a project.
 - **External users** — LDAP / Active Directory and OpenID Connect; no SAML.
   SSO users run `docker login` with a CLI secret from the web admin.
 
@@ -372,6 +373,7 @@ A project groups repositories sharing the same first name segment: the `team` pr
   | Guest | ✓ | | | |
 
 - Inside a project, only members and registry administrators have access; the user's global role ("User", "Read-only") does not apply here. Outsiders do not see the project's repositories either in `/v2/_catalog` or in the web admin.
+- **Repository access** — roles on some repositories of a project, on top of a member's role on the whole project. A rule names a user, a pattern within the project (`app-*` — one level, `app/**` — everything under `app/`, `api` — one repository) and a role (maintainer, developer or guest). The user may do what any of their roles allows: guest on `team` plus developer on `app-*` means push only to `team/app-*` and pull from the rest. A user with only such rules sees the project too. Rules are managed by project admins on the project page ("Repository access").
 - **Public project** — pull without sign-in for everyone (like `RGSTR_PUBLIC_REPOS`, but configured in the web admin).
 - Repositories outside projects follow global roles, as before.
 - **Storage quota** (set by a registry administrator): calculated over the unique layers of all the project's images that tags point to. A manifest push that would take the project over its quota is rejected (`denied: quota exceeded: project team would use 3.3 MiB of 2.0 MiB`); a push without new data (a new tag on an already uploaded image) always succeeds. Used space and the quota are shown in the project list. Layers uploaded without a manifest do not count toward the quota — GC removes them.
@@ -383,7 +385,7 @@ A project groups repositories sharing the same first name segment: the `team` pr
 For CI and automation, an administrator creates robot accounts on the "Robots" page:
 
 - a name like `robot$ci`, and a generated secret instead of a password. The secret is shown once and only its hash is stored; if it leaks, it can be regenerated (the old one stops working immediately);
-- permissions are listed explicitly: a project (or "all repositories") and the pull/push/delete actions. A robot with permissions on a specific project has no access to repositories outside projects;
+- permissions are listed explicitly: a project (or "all repositories"), optionally a repository pattern (`web/**` within the project; with "all repositories" the full name, e.g. `team/base-*`), and the pull/push/delete actions. A robot with permissions on a specific project has no access to repositories outside projects;
 - expiration (30/90/180/365 days or never), disabling. A disabled, expired or deleted robot loses access immediately;
 - a robot works only through `docker login`; it cannot sign in to the web admin.
 
@@ -1107,6 +1109,7 @@ The UI gets its data in a single request:
 | `POST` | `/ui/api/projects/create` | `{"name","description","public","quota_bytes"}` (administrator) |
 | `POST` | `/ui/api/projects/update` | `{"name","description","public","quota_bytes"}` (project admin; quota — administrator) |
 | `POST` | `/ui/api/projects/member` | `{"name","user","role"}`; empty role — remove the member (project admin) |
+| `POST` | `/ui/api/projects/grant` | `{"name","user","repos","role"}` — a role on repositories of the project matching `repos`; an empty role removes the rule (project admins) |
 | `POST` | `/ui/api/projects/delete` | `{"name"}` — empty project only (administrator) |
 | `GET` | `/ui/api/robots` | Robot accounts (administrator) |
 | `POST` | `/ui/api/robots/create` | `{"name","description","permissions":[{"project","actions"}],"expires_days"}` → `{"name","secret"}` |

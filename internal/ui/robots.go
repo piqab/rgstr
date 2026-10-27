@@ -84,6 +84,9 @@ func validatePermissions(perms []meta.RobotPermission) error {
 		if len(p.Actions) == 0 {
 			return fmt.Errorf("project %s: choose at least one action", p.Project)
 		}
+		if p.Repos != "" && !meta.ValidRepoPattern(p.Repos) {
+			return fmt.Errorf("project %s: repositories %q is not a pattern such as app-* or app/**", p.Project, p.Repos)
+		}
 		for _, a := range p.Actions {
 			if a != "pull" && a != "push" && a != "delete" {
 				return fmt.Errorf("unknown action %q", a)
@@ -107,7 +110,11 @@ func expiry(days *int) (*time.Time, error) {
 func permsDetail(perms []meta.RobotPermission) string {
 	var parts []string
 	for _, p := range perms {
-		parts = append(parts, p.Project+": "+strings.Join(p.Actions, ","))
+		scope := p.Project
+		if p.Repos != "" {
+			scope += " (" + p.Repos + ")"
+		}
+		parts = append(parts, scope+": "+strings.Join(p.Actions, ","))
 	}
 	return strings.Join(parts, "; ")
 }

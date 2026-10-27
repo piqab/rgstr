@@ -366,7 +366,7 @@ func (h *Handler) Can(subject, repo, action string) bool {
 		return true
 	}
 	if proj, ok := h.project(repo); ok {
-		return contains(projectActions(proj.Members[subject]), action)
+		return contains(memberActions(proj, subject, repo), action)
 	}
 	return contains(h.UserActions(subject), action)
 }
@@ -381,6 +381,23 @@ func (h *Handler) project(repo string) (meta.Project, bool) {
 		return meta.Project{}, false
 	}
 	return h.meta.Project(name)
+}
+
+// memberActions is what subject may do in repo of project p: their role
+// on the whole project plus their grants matching the repository.
+func memberActions(p meta.Project, subject, repo string) []string {
+	actions := projectActions(p.Members[subject])
+	rel := meta.RepoInProject(p.Name, repo)
+	for _, g := range p.Grants {
+		if g.User == subject && glob.Match(g.Repos, rel) {
+			for _, a := range projectActions(g.Role) {
+				if !contains(actions, a) {
+					actions = append(actions, a)
+				}
+			}
+		}
+	}
+	return actions
 }
 
 // projectActions maps a project role to repository actions.
@@ -520,8 +537,18 @@ func (h *Handler) robotCan(name, repo, action string) bool {
 	}
 	project := meta.ProjectOf(repo)
 	for _, p := range r.Permissions {
-		if (p.Project == "*" || (project != "" && p.Project == project)) && contains(p.Actions, action) {
-			return true
+		if !contains(p.Actions, action) {
+			continue
+		}
+		switch {
+		case p.Project == "*":
+			if p.Repos == "" || glob.Match(p.Repos, repo) {
+				return true
+			}
+		case project != "" && p.Project == project:
+			if p.Repos == "" || glob.Match(p.Repos, meta.RepoInProject(project, repo)) {
+				return true
+			}
 		}
 	}
 	return false

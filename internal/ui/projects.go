@@ -46,7 +46,15 @@ type memberInfo struct {
 // projectVisible reports whether user may see the project: admins, members
 // and anyone for public projects.
 func (h *Handler) projectVisible(user string, p meta.Project) bool {
-	return p.Public || h.auth.IsAdmin(user) || p.Members[user] != ""
+	if p.Public || h.auth.IsAdmin(user) || p.Members[user] != "" {
+		return true
+	}
+	for _, g := range p.Grants {
+		if g.User == user {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) projectInfo(user string, p meta.Project, repos []string) projectInfo {
@@ -117,9 +125,14 @@ func (h *Handler) handleProject(w http.ResponseWriter, r *http.Request) {
 	if repos == nil {
 		repos = []string{}
 	}
+	grants := p.Grants
+	if grants == nil {
+		grants = []meta.RepoGrant{}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"project":  h.projectInfo(user, p, all),
 		"members":  members,
+		"grants":   grants,
 		"repos":    repos,
 		"is_admin": h.auth.IsAdmin(user),
 	})
@@ -132,6 +145,7 @@ type projectRequest struct {
 	QuotaBytes  *int64 `json:"quota_bytes"` // registry admins only
 	User        string `json:"user"`
 	Role        string `json:"role"`
+	Repos       string `json:"repos"` // grants: repository pattern within the project
 
 	// Pull-through cache (registry admins only): Proxy nil leaves it as
 	// is; URL "" makes the project a normal one. An empty password keeps
@@ -295,6 +309,55 @@ func (h *Handler) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
 				}
 				p.QuotaBytes = *req.QuotaBytes
 			}
+			d.Projects[req.Name] = p
+			return nil
+		})
+	})
+}
+
+// handleProjectGrant gives a user a role on the repositories of the
+// project matching a pattern, or (with an empty role) takes it back.
+func (h *Handler) handleProjectGrant(w http.ResponseWriter, r *http.Request) {
+	h.projectAction(w, r, audit.ProjectMember, false, func(user string, req projectRequest) (string, error) {
+		switch req.Role {
+		case "", meta.ProjectMaintainer, meta.ProjectDeveloper, meta.ProjectGuest:
+		default:
+			return "", errors.New("role must be maintainer, developer or guest (admin is a role on the whole project)")
+		}
+		if !meta.ValidRepoPattern(req.Repos) {
+			return "", errors.New("repositories: a pattern within the project such as app-*, app/** or api")
+		}
+		if req.Role != "" && !h.auth.UserExists(req.User) {
+			return "", fmt.Errorf("user %q does not exist", req.User)
+		}
+		if req.User == user && !h.auth.IsAdmin(user) {
+			return "", errors.New("you cannot change your own access")
+		}
+		detail := fmt.Sprintf("%s on %s/%s → %s", req.User, req.Name, req.Repos, req.Role)
+		if req.Role == "" {
+			detail = fmt.Sprintf("%s on %s/%s removed", req.User, req.Name, req.Repos)
+		}
+		return detail, h.meta.Update(func(d *meta.Data) error {
+			p, ok := d.Projects[req.Name]
+			if !ok {
+				return errProjectNotFound
+			}
+			var grants []meta.RepoGrant
+			for _, g := range p.Grants {
+				if g.User != req.User || g.Repos != req.Repos {
+					grants = append(grants, g)
+				}
+			}
+			if req.Role != "" {
+				grants = append(grants, meta.RepoGrant{User: req.User, Repos: req.Repos, Role: req.Role})
+			}
+			sort.Slice(grants, func(i, j int) bool {
+				if grants[i].User != grants[j].User {
+					return grants[i].User < grants[j].User
+				}
+				return grants[i].Repos < grants[j].Repos
+			})
+			p.Grants = grants
 			d.Projects[req.Name] = p
 			return nil
 		})

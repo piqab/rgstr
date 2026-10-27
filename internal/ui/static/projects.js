@@ -92,7 +92,7 @@
   async function renderProject(el, name) {
     const res = await App.api('/ui/api/project?' + new URLSearchParams({name}));
     if (!res.ok) throw new Error(res.data.error || t('common.failed', {status: res.status}));
-    const {project: p, members, repos, is_admin} = res.data;
+    const {project: p, members, grants, repos, is_admin} = res.data;
     const manage = p.can_manage;
 
     el.innerHTML = `
@@ -158,6 +158,30 @@
       </div>
 
       <div class="card">
+        <h3 style="margin-top:0">${esc(t('proj.grants'))}</h3>
+        <p class="muted small" style="margin-bottom:10px">${esc(t('proj.grantsHint'))}</p>
+        ${grants.length ? `<div class="tbl-wrap"><table class="tbl">
+          <tr><th>${esc(t('users.name'))}</th><th>${esc(t('proj.grantRepos'))}</th><th>${esc(t('users.role'))}</th><th></th></tr>
+          ${grants.map(g => `
+            <tr>
+              <td>${esc(g.user)}</td>
+              <td class="mono">${esc(p.name)}/${esc(g.repos)}</td>
+              <td>${esc(t('prole.' + g.role))}</td>
+              <td class="actions">${manage && (is_admin || g.user !== App.session.user)
+                ? `<button class="btn btn-sm btn-danger" data-ungrant="${esc(g.user)}" data-repos="${esc(g.repos)}">${esc(t('proj.remove'))}</button>` : ''}</td>
+            </tr>`).join('')}
+        </table></div>` : `<div class="empty">${esc(t('proj.noGrants'))}</div>`}
+        ${manage ? `
+          <form class="form toolbar" id="add-grant" style="margin:14px 0 0">
+            <input name="user" placeholder="${esc(t('proj.userPlaceholder'))}" required style="width:180px;margin:0">
+            <input name="repos" placeholder="app-*" required style="width:160px;margin:0" title="${esc(t('proj.grantReposHint'))}">
+            <select name="role" style="width:auto;margin:0">${['maintainer', 'developer', 'guest'].map(r =>
+              `<option value="${r}" ${r === 'developer' ? 'selected' : ''}>${esc(t('prole.' + r))}</option>`).join('')}</select>
+            <button class="btn btn-primary">${esc(t('proj.addGrant'))}</button>
+          </form>` : ''}
+      </div>
+
+      <div class="card">
         <h3 style="margin-top:0">${esc(t('proj.repos'))}</h3>
         <p class="muted small" style="margin-bottom:10px">${esc(t('proj.pushHint', {host: App.registryHost(), name: p.name}))}</p>
         ${repos.length ? repos.map(r => `<div><a href="#repos/${encodeURIComponent(r)}">${esc(r)}</a></div>`).join('') : `<div class="empty">${esc(t('proj.noRepos'))}</div>`}
@@ -199,7 +223,17 @@
     el.addEventListener('change', e => {
       if (e.target.dataset.member) setMember(p.name, e.target.dataset.member, e.target.value);
     });
+    const grantForm = el.querySelector('#add-grant');
+    if (grantForm) grantForm.addEventListener('submit', e => {
+      e.preventDefault();
+      const f = grantForm.elements;
+      setGrant(p.name, f.user.value.trim(), f.repos.value.trim(), f.role.value);
+    });
     el.addEventListener('click', e => {
+      const ug = e.target.closest('[data-ungrant]');
+      if (ug && confirm(t('proj.confirmUngrant', {user: ug.dataset.ungrant, repos: p.name + '/' + ug.dataset.repos}))) {
+        setGrant(p.name, ug.dataset.ungrant, ug.dataset.repos, '');
+      }
       const rm = e.target.closest('[data-remove]');
       if (rm && confirm(t('proj.confirmRemove', {user: rm.dataset.remove}))) setMember(p.name, rm.dataset.remove, '');
     });
@@ -238,6 +272,13 @@
   function roleSelect(user, role) {
     return `<select data-member="${esc(user)}" style="padding:4px 6px">${roles.map(r =>
       `<option value="${r}" ${r === role ? 'selected' : ''}>${esc(t('prole.' + r))}</option>`).join('')}</select>`;
+  }
+
+  async function setGrant(project, user, repos, role) {
+    const r = await post('/ui/api/projects/grant', {name: project, user, repos, role});
+    if (!r.ok) { toast(r.data.error || t('common.failed', {status: r.status})); return; }
+    toast(role ? t('proj.grantSaved', {user}) : t('proj.grantRemoved', {user}));
+    App.route();
   }
 
   async function setMember(project, user, role) {
@@ -289,6 +330,15 @@ App.addLang('en', {
   'proj.deleteHint': 'Delete its repositories first.',
   'proj.confirmDelete': 'Delete project {name}? Its members and settings are lost.',
   'proj.deleted': 'Project {name} deleted',
+  'proj.grants': 'Repository access',
+  'proj.grantsHint': 'Roles on some repositories of the project, on top of a member\'s role on the whole project: a user may do what either allows. Example: guest on the project and developer on app-* lets a user push only to app-* repositories.',
+  'proj.grantRepos': 'Repositories',
+  'proj.grantReposHint': 'A pattern within the project: app-* (one level), app/** (everything under app/), api (one repository)',
+  'proj.noGrants': 'No repository-level access.',
+  'proj.addGrant': 'Grant',
+  'proj.grantSaved': '{user}: access saved',
+  'proj.grantRemoved': '{user}: access removed',
+  'proj.confirmUngrant': 'Remove the access of {user} to {repos}?',
   'proj.cacheBadge': 'cache',
   'proj.cacheLabel': 'Pull-through cache of another registry (Docker Hub, GHCR, …)',
   'proj.cacheTitle': 'Pull-through cache',
@@ -315,6 +365,15 @@ App.addLang('en', {
 });
 
 App.addLang('ru', {
+  'proj.grants': 'Доступ к репозиториям',
+  'proj.grantsHint': 'Роли на отдельные репозитории проекта — в дополнение к роли участника на весь проект: пользователь может то, что разрешает любая из них. Пример: гость в проекте и разработчик на app-* — push только в репозитории app-*.',
+  'proj.grantRepos': 'Репозитории',
+  'proj.grantReposHint': 'Шаблон внутри проекта: app-* (один уровень), app/** (всё внутри app/), api (один репозиторий)',
+  'proj.noGrants': 'Доступа на уровне репозиториев нет.',
+  'proj.addGrant': 'Выдать',
+  'proj.grantSaved': '{user}: доступ сохранён',
+  'proj.grantRemoved': '{user}: доступ убран',
+  'proj.confirmUngrant': 'Убрать доступ {user} к {repos}?',
   'nav.projects': 'Проекты',
   'proj.intro': 'Проект объединяет репозитории с именами «<проект>/…». Внутри проекта доступ есть только у его участников (и администраторов реестра) — по их роли в проекте. Репозитории вне проектов работают по глобальным ролям.',
   'proj.new': 'Новый проект',

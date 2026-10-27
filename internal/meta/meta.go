@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -90,7 +91,38 @@ type Robot struct {
 type RobotPermission struct {
 	Project string   `json:"project"`
 	Actions []string `json:"actions"`
+	// Repos limits the permission to repositories matching this glob
+	// within the project ("app-*", "app/**"; with project "*" the full
+	// name). "": every repository of the project.
+	Repos string `json:"repos,omitempty"`
 }
+
+// RepoGrant gives a user a role on some repositories of a project, on top
+// of their role on the whole project (Members): the user may do what
+// either allows.
+type RepoGrant struct {
+	User  string `json:"user"`
+	Repos string `json:"repos"` // glob within the project: "app-*", "app/**", "api"
+	Role  string `json:"role"`  // maintainer, developer or guest
+}
+
+var repoPatternRe = regexp.MustCompile(`^[a-z0-9*?._-]+(/[a-z0-9*?._-]+)*$`)
+
+// ValidRepoPattern reports whether p is a repository glob.
+func ValidRepoPattern(p string) bool {
+	if len(p) > 200 || !repoPatternRe.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// RepoInProject is repo's name within its project ("team/app/api" → "app/api").
+func RepoInProject(project, repo string) string { return strings.TrimPrefix(repo, project+"/") }
 
 // Active reports whether the robot may authenticate at time now.
 func (r Robot) Active(now time.Time) bool {
@@ -122,6 +154,9 @@ type Project struct {
 	Members     map[string]string `json:"members,omitempty"` // user → project role
 	QuotaBytes  int64             `json:"quota_bytes,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
+
+	// Grants are roles of users on some repositories of the project.
+	Grants []RepoGrant `json:"grants,omitempty"`
 
 	// Proxy makes the project a read-only pull-through cache of another
 	// registry; nil: a normal project.
@@ -176,6 +211,7 @@ func (s *Store) Projects() []Project {
 
 func copyProject(p Project) Project {
 	p.Members = copyMap(p.Members)
+	p.Grants = append([]RepoGrant(nil), p.Grants...)
 	if p.Proxy != nil {
 		c := *p.Proxy
 		p.Proxy = &c

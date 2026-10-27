@@ -141,3 +141,68 @@ func basicAuthPw(user, pass string) map[string]string {
 	req.SetBasicAuth(user, pass)
 	return map[string]string{"Authorization": req.Header.Get("Authorization")}
 }
+
+func TestRepositoryGrants(t *testing.T) {
+	h := projectHandler(t)
+	h.meta.Update(func(d *meta.Data) error {
+		p := d.Projects["team"]
+		p.Grants = []meta.RepoGrant{
+			{User: "carol", Repos: "app-*", Role: meta.ProjectDeveloper}, // guest elsewhere
+			{User: "dave", Repos: "db/**", Role: meta.ProjectMaintainer}, // no project role
+			{User: "bob", Repos: "app-web", Role: meta.ProjectGuest},     // below his role: no effect
+		}
+		d.Projects["team"] = p
+		return nil
+	})
+	cases := []struct {
+		user, repo, action string
+		want               bool
+	}{
+		{"carol", "team/app-web", "push", true},
+		{"carol", "team/app-web", "delete", false},
+		{"carol", "team/other", "push", false},
+		{"carol", "team/other", "pull", true}, // her project role
+		{"dave", "team/db/main", "delete", true},
+		{"dave", "team/db", "pull", true}, // ** matches no segment too, as in RGSTR_PUBLIC_REPOS
+		{"dave", "team/app-web", "pull", false},
+		{"bob", "team/app-web", "push", true}, // grants only add
+	}
+	for _, c := range cases {
+		if got := h.Can(c.user, c.repo, c.action); got != c.want {
+			t.Errorf("Can(%q, %q, %q) = %v, want %v", c.user, c.repo, c.action, got, c.want)
+		}
+	}
+	if h.IsProjectAdmin("dave", "team") {
+		t.Error("a repository grant made dave a project admin")
+	}
+	// Tokens are narrowed to the granted repositories.
+	got := h.grantForUser("carol", []Access{
+		{Type: "repository", Name: "team/app-api", Actions: []string{"pull", "push"}},
+		{Type: "repository", Name: "team/other", Actions: []string{"pull", "push"}},
+	})
+	if len(got) != 2 || len(got[0].Actions) != 2 || len(got[1].Actions) != 1 {
+		t.Errorf("token grant: %+v", got)
+	}
+}
+
+func TestRobotRepositoryPatterns(t *testing.T) {
+	h := projectHandler(t)
+	addRobot(h, meta.Robot{Name: "robot$web", Permissions: []meta.RobotPermission{
+		{Project: "team", Repos: "web/**", Actions: []string{"pull", "push"}},
+		{Project: "*", Repos: "team/base-*", Actions: []string{"pull"}}, // full names with "*"
+	}}, "s3cret")
+	cases := []struct {
+		repo, action string
+		want         bool
+	}{
+		{"team/web/frontend", "push", true},
+		{"team/api", "pull", false},
+		{"team/base-alpine", "pull", true},
+		{"team/other", "pull", false},
+	}
+	for _, c := range cases {
+		if got := h.Can("robot$web", c.repo, c.action); got != c.want {
+			t.Errorf("robot Can(%q, %q) = %v, want %v", c.repo, c.action, got, c.want)
+		}
+	}
+}
