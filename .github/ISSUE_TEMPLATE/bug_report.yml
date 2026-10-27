@@ -1,0 +1,35 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`rgstr --version` or `curl <registry>/healthz`"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How is rgstr run?
+      options:
+        - Docker / docker compose
+        - Binary (systemd etc.)
+        - Kubernetes with rgstroperator
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: "Steps to reproduce, if you have them."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and configuration
+      description: "Relevant log lines (`docker logs`, journal) and the client command that failed (`docker push ...`). Remove passwords and secrets."
+      render: text

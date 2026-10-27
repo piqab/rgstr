@@ -16,10 +16,17 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # The newest Go patch release (stdlib security fixes); go.mod only
+          # sets the minimum.
+          go-version: "1.26"
+          check-latest: true
 
       - name: Vet
         run: go vet ./...
+
+      # Fails on vulnerabilities in code paths rgstr actually calls.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: Test
         run: go test -race -count=1 ./...

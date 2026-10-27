@@ -1,7 +1,7 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
 # Builder runs natively on the build host and cross-compiles for TARGETARCH,
 # so multi-arch images build fast without QEMU emulating the Go compiler.
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 

@@ -27,7 +27,10 @@ jobs:
           fi
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # The newest Go patch release (stdlib security fixes); go.mod only
+          # sets the minimum.
+          go-version: "1.26"
+          check-latest: true
       - run: go test -race -count=1 ./...
 
   binaries:
@@ -44,7 +47,10 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # The newest Go patch release (stdlib security fixes); go.mod only
+          # sets the minimum.
+          go-version: "1.26"
+          check-latest: true
 
       - name: Build
         env:
