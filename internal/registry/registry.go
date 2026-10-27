@@ -25,6 +25,7 @@ import (
 	"rgstr/internal/auth"
 	"rgstr/internal/backup"
 	"rgstr/internal/config"
+	"rgstr/internal/db"
 	"rgstr/internal/maint"
 	"rgstr/internal/meta"
 	"rgstr/internal/metrics"
@@ -66,6 +67,7 @@ type Registry struct {
 	hooks       *webhook.Notifier
 	metrics     *metrics.Registry // nil unless RGSTR_METRICS_ENABLED
 	backup      *backup.Runner    // nil unless RGSTR_BACKUP_TARGET
+	db          *db.DB            // nil unless RGSTR_DATABASE_URL (cluster)
 
 	sizeMu sync.Mutex
 	size   int64
@@ -83,7 +85,20 @@ func registryHost(cfg *config.Config) string {
 
 // New creates a Registry.
 func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Config, counter *stats.Counter) *Registry {
-	m, err := meta.Open(cfg.StorageRoot)
+	return NewCluster(store, tokenSvc, cfg, counter, nil)
+}
+
+// NewCluster creates a Registry whose state is shared through database
+// with the other processes of a cluster (nil: one process, files in
+// the storage directory).
+func NewCluster(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Config, counter *stats.Counter, database *db.DB) *Registry {
+	var m *meta.Store
+	var err error
+	if database != nil {
+		m, err = meta.OpenShared(database.Doc("meta"))
+	} else {
+		m, err = meta.Open(cfg.StorageRoot)
+	}
 	if err != nil {
 		log.Fatalf("metadata: %v", err)
 	}
@@ -92,8 +107,10 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 			log.Fatalf("RGSTR_TRUSTED_PROXIES: %v", err)
 		}
 	}
-	alog, err := audit.Open(cfg.StorageRoot)
-	if err != nil {
+	var alog *audit.Log
+	if database != nil {
+		alog = audit.OpenShared(database)
+	} else if alog, err = audit.Open(cfg.StorageRoot); err != nil {
 		log.Fatalf("audit log: %v", err)
 	}
 	o := ops.New(store, m, alog)
@@ -108,6 +125,23 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 		meta:     m,
 		maint:    maint.New(cfg, store, m, o),
 		hooks:    hooks,
+		db:       database,
+	}
+	if database != nil {
+		store.SetLocker(database)
+		r.maint.Claim = func(job string, interval time.Duration) bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ok, err := database.Claim(ctx, job, interval)
+			if err != nil {
+				log.Printf("%s: claim: %v", job, err)
+			}
+			return ok
+		}
+		if cfg.Backup.Target != "" {
+			log.Fatalf("backup: RGSTR_BACKUP_TARGET does not work in a cluster (RGSTR_DATABASE_URL): " +
+				"the data is in S3 and PostgreSQL, back those up (bucket versioning or replication, database backups)")
+		}
 	}
 	if cfg.MetricsEnabled {
 		r.metrics = metrics.New(cfg.Version, r.gauges)
@@ -137,7 +171,11 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 // installed so that /v2/auth works even when auth is disabled.
 func (reg *Registry) Mount(mux *http.ServeMux) {
 	inner := http.HandlerFunc(reg.dispatch)
-	reg.authHandler = auth.NewHandler(reg.cfg, reg.tokenSvc, inner)
+	if reg.db != nil {
+		reg.authHandler = auth.NewSharedHandler(reg.cfg, reg.tokenSvc, inner, reg.db.Doc("users"))
+	} else {
+		reg.authHandler = auth.NewHandler(reg.cfg, reg.tokenSvc, inner)
+	}
 	reg.authHandler.SetAudit(reg.ops.AuditLog())
 	reg.authHandler.SetMeta(reg.meta)
 	mux.Handle("/v2/", reg.authHandler)
@@ -155,6 +193,31 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 			}
 		}
 		json.NewEncoder(w).Encode(resp)
+	})
+
+	// /readyz also checks the database and the storage: a process that
+	// cannot reach them is taken out of the load balancer, not restarted.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		check := func() error {
+			if reg.db != nil {
+				if err := reg.db.Ping(ctx); err != nil {
+					return fmt.Errorf("database: %w", err)
+				}
+			}
+			if _, err := reg.store.Driver().List(ctx, "repositories"); err != nil {
+				return fmt.Errorf("storage: %w", err)
+			}
+			return nil
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := check(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": "unavailable", "error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
 	mux.HandleFunc("/stats", reg.handleStats)
@@ -314,6 +377,12 @@ func (reg *Registry) handleGetBlob(w http.ResponseWriter, r *http.Request, repo 
 		writeError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 		return
 	}
+	// Object storage may let clients download directly.
+	if u := reg.store.BlobRedirectURL(d); u != "" {
+		w.Header().Set("Docker-Content-Digest", string(d))
+		http.Redirect(w, r, u, http.StatusTemporaryRedirect)
+		return
+	}
 	f, err := reg.store.OpenBlob(d)
 	if err != nil {
 		if errors.Is(err, storage.ErrBlobNotFound) {
@@ -326,11 +395,10 @@ func (reg *Registry) handleGetBlob(w http.ResponseWriter, r *http.Request, repo 
 	}
 	defer f.Close()
 
-	fi, _ := f.Stat()
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Docker-Content-Digest", string(d))
 	// http.ServeContent handles Range, If-Range, Content-Length, 206 etc.
-	http.ServeContent(w, r, "", fi.ModTime(), f)
+	http.ServeContent(w, r, "", f.ModTime, f)
 }
 
 // repoBlob returns blob metadata if the blob exists and belongs to repo,
@@ -851,7 +919,12 @@ func (reg *Registry) gauges() metrics.Gauges {
 		g.Repositories = len(repos)
 	}
 	reg.sizeMu.Lock()
-	if time.Since(reg.sizeAt) > time.Minute {
+	// Summing every blob costs a listing of the whole bucket on S3.
+	every := time.Minute
+	if reg.store.Driver().Name() != "filesystem" {
+		every = 10 * time.Minute
+	}
+	if time.Since(reg.sizeAt) > every {
 		reg.size, reg.sizeAt = reg.store.DataSize(), time.Now()
 	}
 	g.StorageBytes = reg.size

@@ -30,3 +30,39 @@ jobs:
 
       - name: Test
         run: go test -race -count=1 ./...
+
+  # The cluster mode against real PostgreSQL and S3 (SeaweedFS): the
+  # database layer, the S3 storage driver, and three rgstr processes under
+  # load while they are killed and restarted.
+  cluster:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Start PostgreSQL and SeaweedFS
+        run: |
+          docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=pw -e POSTGRES_DB=rgstr postgres:16-alpine
+          echo '{"identities":[{"name":"ci","credentials":[{"accessKey":"cikey","secretKey":"cisecret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' > /tmp/s3.json
+          docker run -d --name s3 -p 9000:8333 -v /tmp/s3.json:/etc/s3.json:ro chrislusf/seaweedfs:latest server -s3 -s3.config=/etc/s3.json
+          for i in $(seq 60); do
+            pg=$(docker exec pg pg_isready -U postgres >/dev/null 2>&1 && echo ok)
+            s3=$(curl -s -o /dev/null -w '%{http_code}' localhost:9000/)
+            [ "$pg" = ok ] && [ "$s3" != 000 ] && break
+            sleep 1
+          done
+          sleep 5
+          docker exec s3 sh -c 'echo "s3.bucket.create -name rgstr-test" | weed shell'
+
+      - name: Cluster tests
+        env:
+          RGSTR_TEST_DATABASE_URL: postgres://postgres:pw@localhost:5432/rgstr?sslmode=disable
+          RGSTR_TEST_S3: http://localhost:9000
+          RGSTR_TEST_S3_KEY: cikey
+          RGSTR_TEST_S3_SECRET: cisecret
+          RGSTR_TEST_HA_DURATION: 30s
+        run: go test -count=1 -timeout 15m -v ./internal/db ./internal/storage ./internal/backup ./test/ha

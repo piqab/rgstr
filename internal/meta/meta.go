@@ -5,6 +5,7 @@ package meta
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -221,9 +222,58 @@ const MaxGCHistory = 30
 
 // Store guards Data and writes it to disk on every update.
 type Store struct {
-	path string // empty: in-memory only
-	mu   sync.RWMutex
-	data Data
+	path    string  // empty: in-memory only
+	backend Backend // shared document instead of the file; nil: file
+	mu      sync.RWMutex
+	data    Data
+}
+
+// Backend keeps the data in a document shared by several rgstr processes
+// (PostgreSQL): updates are atomic across processes, and Watch reports
+// changes made by the others.
+type Backend interface {
+	Load() ([]byte, error)
+	Update(fn func(old []byte) ([]byte, error)) error
+	Watch(fn func())
+}
+
+// OpenShared loads the data from b and follows changes other processes
+// make to it.
+func OpenShared(b Backend) (*Store, error) {
+	s := &Store{backend: b}
+	if err := s.reload(); err != nil {
+		return nil, err
+	}
+	b.Watch(func() {
+		if err := s.reload(); err != nil {
+			log.Printf("metadata: reload: %v", err)
+		}
+	})
+	return s, nil
+}
+
+func (s *Store) reload() error {
+	raw, err := s.backend.Load()
+	if err != nil {
+		return err
+	}
+	var d Data
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return fmt.Errorf("metadata: %w", err)
+		}
+	}
+	s.mu.Lock()
+	s.data = d
+	s.mu.Unlock()
+	return nil
+}
+
+// Export returns the data as JSON (migration to a shared backend).
+func (s *Store) Export() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return json.Marshal(s.data)
 }
 
 // Open loads <root>/meta.json, or starts empty. An empty root keeps data
@@ -260,6 +310,27 @@ func (s *Store) View(fn func(d *Data)) {
 func (s *Store) Update(fn func(d *Data) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.backend != nil {
+		// Apply fn to the latest data, whichever process wrote it; the
+		// cache takes the result once it is committed.
+		var next Data
+		err := s.backend.Update(func(old []byte) ([]byte, error) {
+			next = Data{}
+			if len(old) > 0 {
+				if err := json.Unmarshal(old, &next); err != nil {
+					return nil, err
+				}
+			}
+			if err := fn(&next); err != nil {
+				return nil, err
+			}
+			return json.Marshal(next)
+		})
+		if err == nil {
+			s.data = next
+		}
+		return err
+	}
 	backup, err := json.Marshal(s.data)
 	if err != nil {
 		return err

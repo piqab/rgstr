@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -358,7 +357,7 @@ func TestGCDropsLinksToRemovedBlobs(t *testing.T) {
 	d := digestOf(data)
 	fs.PutBlob(d, bytes.NewReader(data))
 	fs.LinkBlob("repo", d)
-	age(t, fs.layerRefPath("repo", d.Hex()))
+	age(t, fs, fs.layerRefPath("repo", d.Hex()))
 
 	if err := fs.RunGC(); err != nil {
 		t.Fatalf("GC: %v", err)
@@ -368,11 +367,11 @@ func TestGCDropsLinksToRemovedBlobs(t *testing.T) {
 	}
 }
 
-// age backdates path beyond the GC grace period.
-func age(t *testing.T, path string) {
+// age backdates a stored file beyond the GC grace period.
+func age(t *testing.T, fs *Filesystem, path string) {
 	t.Helper()
 	old := time.Now().Add(-48 * time.Hour)
-	if err := os.Chtimes(path, old, old); err != nil {
+	if err := os.Chtimes(fs.localPath(path), old, old); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
 }
@@ -395,7 +394,7 @@ func TestGCKeepsRecentlyUploadedBlobs(t *testing.T) {
 		t.Errorf("recently uploaded blob was GC'd: %v", err)
 	}
 
-	age(t, fs.layerRefPath("repo", d.Hex()))
+	age(t, fs, fs.layerRefPath("repo", d.Hex()))
 	if err := fs.RunGC(); err != nil {
 		t.Fatalf("GC: %v", err)
 	}
@@ -420,7 +419,7 @@ func TestGCKeepsRecentUntaggedManifests(t *testing.T) {
 		t.Errorf("recent untagged manifest was GC'd: %v", err)
 	}
 
-	age(t, fs.manifestDigestPath("repo", mf.Digest.Hex()))
+	age(t, fs, fs.manifestDigestPath("repo", mf.Digest.Hex()))
 	if err := fs.RunGC(); err != nil {
 		t.Fatalf("GC: %v", err)
 	}
@@ -465,7 +464,7 @@ func TestGCRemovesStaleUploads(t *testing.T) {
 	}
 
 	// The upload directory must be gone.
-	if _, err := os.Stat(fs.uploadDir(info.UUID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(fs.localPath(fs.uploadDir(info.UUID))); !os.IsNotExist(err) {
 		t.Errorf("stale upload not removed: %v", err)
 	}
 }
@@ -525,8 +524,8 @@ func putImage(t *testing.T, fs *Filesystem, repo, ref string, layer []byte) (*Ma
 	if err := fs.PutManifest(repo, ref, mf); err != nil {
 		t.Fatalf("PutManifest: %v", err)
 	}
-	age(t, fs.manifestDigestPath(repo, mf.Digest.Hex()))
-	age(t, fs.layerRefPath(repo, ld.Hex()))
+	age(t, fs, fs.manifestDigestPath(repo, mf.Digest.Hex()))
+	age(t, fs, fs.layerRefPath(repo, ld.Hex()))
 	return mf, ld
 }
 
@@ -556,7 +555,7 @@ func TestGCKeepsIndexChildren(t *testing.T) {
 	if err := fs.PutManifest("repo", "multi", index); err != nil {
 		t.Fatalf("PutManifest index: %v", err)
 	}
-	age(t, fs.manifestDigestPath("repo", index.Digest.Hex()))
+	age(t, fs, fs.manifestDigestPath("repo", index.Digest.Hex()))
 
 	if err := fs.RunGC(); err != nil {
 		t.Fatalf("GC: %v", err)
@@ -606,7 +605,7 @@ func TestDeleteRepositoryKeepsNested(t *testing.T) {
 	if err := fs.DeleteRepository("team/app"); err != nil {
 		t.Fatalf("DeleteRepository nested: %v", err)
 	}
-	if entries, _ := os.ReadDir(filepath.Join(fs.root, "repositories")); len(entries) != 0 {
+	if entries, _ := os.ReadDir(fs.localPath("repositories")); len(entries) != 0 {
 		t.Errorf("empty directories left behind: %v", entries)
 	}
 }

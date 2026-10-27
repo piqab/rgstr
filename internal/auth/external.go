@@ -51,35 +51,38 @@ func (c *credentials) signInExternal(user, source, role string, keepRole bool) e
 	if c.isLocal(user) {
 		return ErrLocalUser
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	now := time.Now().UTC()
-	sp, found := c.users[user]
-	if found && sp.Source != "" && sp.Source == source && (keepRole || sp.Role == role) &&
+	if sp, found := c.stored(user); found && sp.Source == source && (keepRole || sp.Role == role) &&
 		now.Sub(sp.LastLogin) < time.Hour {
 		return nil // nothing changed: spare the write on every docker login
 	}
-	if !found {
-		sp = storedPassword{Managed: true, Role: role, CreatedAt: now, ChangedAt: now}
-	} else if !keepRole {
-		sp.Role = role
-	}
-	sp.Source, sp.LastLogin = source, now
-	c.users[user] = sp
-	return c.saveLocked()
+	return c.mutate(func(users map[string]storedPassword) error {
+		sp, found := users[user]
+		if found && sp.Source == "" {
+			return ErrLocalUser
+		}
+		if !found {
+			sp = storedPassword{Managed: true, Role: role, CreatedAt: now, ChangedAt: now}
+		} else if !keepRole {
+			sp.Role = role
+		}
+		sp.Source, sp.LastLogin = source, now
+		users[user] = sp
+		return nil
+	})
 }
 
 // setCLISecret stores the hash of an external user's docker login secret.
 func (c *credentials) setCLISecret(user, hash string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	sp, ok := c.users[user]
-	if !ok || sp.Source == "" {
-		return ErrUserNotFound
-	}
-	sp.CLISecret = hash
-	c.users[user] = sp
-	return c.saveLocked()
+	return c.mutate(func(users map[string]storedPassword) error {
+		sp, ok := users[user]
+		if !ok || sp.Source == "" {
+			return ErrUserNotFound
+		}
+		sp.CLISecret = hash
+		users[user] = sp
+		return nil
+	})
 }
 
 func (c *credentials) checkCLISecret(user, secret string) bool {

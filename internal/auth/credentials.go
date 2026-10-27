@@ -56,8 +56,9 @@ var userNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 // rotates a hash), the stored password is discarded and the env value
 // applies again.
 type credentials struct {
-	cfg  *config.Config
-	path string // empty: keep changes in memory only
+	cfg     *config.Config
+	path    string       // empty: keep changes in memory only
+	backend UsersBackend // shared document instead of the file; nil: file
 
 	mu    sync.RWMutex
 	users map[string]storedPassword
@@ -82,27 +83,116 @@ type usersFile struct {
 	Users map[string]storedPassword `json:"users"`
 }
 
-func loadCredentials(cfg *config.Config) (*credentials, error) {
-	c := &credentials{cfg: cfg, users: make(map[string]storedPassword)}
-	if cfg.StorageRoot == "" {
-		return c, nil
-	}
-	c.path = filepath.Join(cfg.StorageRoot, "users.json")
+// UsersBackend keeps users.json in a document shared by several rgstr
+// processes (PostgreSQL); see meta.Backend.
+type UsersBackend interface {
+	Load() ([]byte, error)
+	Update(fn func(old []byte) ([]byte, error)) error
+	Watch(fn func())
+}
 
-	raw, err := os.ReadFile(c.path)
-	if os.IsNotExist(err) {
+func loadCredentials(cfg *config.Config) (*credentials, error) {
+	return openCredentials(cfg, nil)
+}
+
+// openCredentials loads the stored passwords from b, or from
+// <storage>/users.json when b is nil.
+func openCredentials(cfg *config.Config, b UsersBackend) (*credentials, error) {
+	c := &credentials{cfg: cfg, users: make(map[string]storedPassword), backend: b}
+	var raw []byte
+	var err error
+	switch {
+	case b != nil:
+		raw, err = b.Load()
+	case cfg.StorageRoot == "":
 		return c, nil
+	default:
+		c.path = filepath.Join(cfg.StorageRoot, "users.json")
+		raw, err = os.ReadFile(c.path)
+		if os.IsNotExist(err) {
+			return c, nil
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	var f usersFile
-	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, fmt.Errorf("%s: %w", c.path, err)
+	users, err := parseUsers(raw)
+	if err != nil {
+		return nil, fmt.Errorf("users: %w", err)
 	}
+	kept, stale := c.reconcile(users, true)
+	c.users = kept
+	if stale {
+		// Every process reconciles with the same env; the write is
+		// applied to the latest stored data.
+		if err := c.mutate(func(u map[string]storedPassword) error {
+			next, _ := c.reconcile(u, false)
+			for k := range u {
+				delete(u, k)
+			}
+			for k, v := range next {
+				u[k] = v
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if b != nil {
+		b.Watch(c.reload)
+	}
+	return c, nil
+}
 
-	stale := false
-	for user, sp := range f.Users {
+func parseUsers(raw []byte) (map[string]storedPassword, error) {
+	var f usersFile
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return nil, err
+		}
+	}
+	if f.Users == nil {
+		f.Users = map[string]storedPassword{}
+	}
+	return f.Users, nil
+}
+
+// reload takes the users another process changed.
+func (c *credentials) reload() {
+	raw, err := c.backend.Load()
+	if err != nil {
+		log.Printf("auth: reload users: %v", err)
+		return
+	}
+	users, err := parseUsers(raw)
+	if err != nil {
+		log.Printf("auth: reload users: %v", err)
+		return
+	}
+	kept, _ := c.reconcile(users, false)
+	c.mu.Lock()
+	c.users = kept
+	c.mu.Unlock()
+}
+
+// reconcile applies env to stored users: entries env replaced or removed
+// are dropped. stale reports that the stored data should be rewritten.
+func (c *credentials) reconcile(stored map[string]storedPassword, verbose bool) (kept map[string]storedPassword, stale bool) {
+	kept = make(map[string]storedPassword, len(stored))
+	logf := func(format string, args ...any) {
+		if verbose {
+			log.Printf(format, args...)
+		}
+	}
+	for user, sp := range stored {
+		if sp.Source != "" { // external (LDAP, OIDC): env does not apply
+			if c.envCredential(user) != "" {
+				stale = true // shadowed by env
+				continue
+			}
+			kept[user] = sp
+			continue
+		}
 		env := c.envCredential(user)
 		_, inEnvUsers := c.cfg.Users[user]
 		baseMatches := sp.Base != "" && env != "" &&
@@ -112,36 +202,78 @@ func loadCredentials(cfg *config.Config) (*credentials, error) {
 			// The first admin after setting their own password: kept even
 			// when RGSTR_ADMIN_PASSWORD is removed; a new value resets it.
 			if env != "" && !baseMatches {
-				log.Printf("auth: password of %q reset by RGSTR_ADMIN_PASSWORD", user)
+				logf("auth: password of %q reset by RGSTR_ADMIN_PASSWORD", user)
 				stale = true
 				continue
 			}
-			c.users[user] = sp
+			kept[user] = sp
 		case sp.Managed && env != "":
 			// A user of the same name was added to env later: env wins.
-			log.Printf("auth: user %q from the admin is shadowed by env; using env", user)
+			logf("auth: user %q from the admin is shadowed by env; using env", user)
 			stale = true
 		case sp.Managed:
-			c.users[user] = sp
+			kept[user] = sp
 		case !inEnvUsers && user == c.cfg.AdminUser && (env == "" || baseMatches):
 			// First admin stored by rgstr ≤1.5.0: make it independent of env
 			// (it used to vanish when RGSTR_ADMIN_PASSWORD was removed).
 			sp.Managed, sp.Role = true, RoleAdmin
-			c.users[user] = sp
+			kept[user] = sp
 			stale = true
 		case env == "" || !baseMatches:
 			// User removed from env, or its env credential was reset.
 			stale = true
 		default:
-			c.users[user] = sp
+			kept[user] = sp
 		}
 	}
-	if stale {
+	return kept, stale
+}
+
+// mutate changes the stored users with fn and saves them. With a shared
+// backend fn sees the latest data of all processes, and the change is
+// atomic across them.
+func (c *credentials) mutate(fn func(users map[string]storedPassword) error) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.backend == nil {
+		next := make(map[string]storedPassword, len(c.users))
+		for k, v := range c.users {
+			next[k] = v
+		}
+		if err := fn(next); err != nil {
+			return err
+		}
+		prev := c.users
+		c.users = next
 		if err := c.saveLocked(); err != nil {
+			c.users = prev
+			return err
+		}
+		return nil
+	}
+	var next map[string]storedPassword
+	err := c.backend.Update(func(old []byte) ([]byte, error) {
+		users, err := parseUsers(old)
+		if err != nil {
 			return nil, err
 		}
+		if err := fn(users); err != nil {
+			return nil, err
+		}
+		next = users
+		return json.MarshalIndent(usersFile{Users: users}, "", "  ")
+	})
+	if err == nil {
+		c.users = next
 	}
-	return c, nil
+	return err
+}
+
+// Export returns the stored users as users.json (migration).
+func (c *credentials) Export() ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return json.MarshalIndent(usersFile{Users: c.users}, "", "  ")
 }
 
 // envCredential returns the credential env configures for user: the plain
@@ -231,37 +363,38 @@ func (c *credentials) setPassword(user, password string, mustChange bool) error 
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	sp, found := c.users[user]
-	if found && sp.Source != "" {
-		return ErrExternalUser
-	}
-	if !found || sp.Base != "" || !sp.Managed {
-		// Env user: remember which env credential this password replaces.
-		env := c.envCredential(user)
-		if env == "" && !(found && sp.Managed) {
-			return ErrUserNotFound
+	env := c.envCredential(user)
+	var base []byte
+	if env != "" {
+		if base, err = bcrypt.GenerateFromPassword([]byte(env), bcrypt.DefaultCost); err != nil {
+			return err
 		}
-		if env != "" {
-			base, err := bcrypt.GenerateFromPassword([]byte(env), bcrypt.DefaultCost)
-			if err != nil {
-				return err
+	}
+	return c.mutate(func(users map[string]storedPassword) error {
+		sp, found := users[user]
+		if found && sp.Source != "" {
+			return ErrExternalUser
+		}
+		if !found || sp.Base != "" || !sp.Managed {
+			// Env user: remember which env credential this password replaces.
+			if env == "" && !(found && sp.Managed) {
+				return ErrUserNotFound
 			}
-			sp.Base = string(base)
+			if env != "" {
+				sp.Base = string(base)
+			}
+			// The first admin's account lives on in users.json once it has its
+			// own password, independent of RGSTR_ADMIN_PASSWORD.
+			if c.isBootstrap(user) {
+				sp.Managed, sp.Role = true, RoleAdmin
+			}
 		}
-		// The first admin's account lives on in users.json once it has its
-		// own password, independent of RGSTR_ADMIN_PASSWORD.
-		if c.isBootstrap(user) {
-			sp.Managed, sp.Role = true, RoleAdmin
-		}
-	}
-	sp.Hash = string(hash)
-	sp.MustChange = mustChange
-	sp.ChangedAt = time.Now().UTC()
-	c.users[user] = sp
-	return c.saveLocked()
+		sp.Hash = string(hash)
+		sp.MustChange = mustChange
+		sp.ChangedAt = time.Now().UTC()
+		users[user] = sp
+		return nil
+	})
 }
 
 // createUser adds a user managed from the web admin.
@@ -282,17 +415,17 @@ func (c *credentials) createUser(user, role, password string, mustChange bool) e
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, taken := c.users[user]; taken {
-		return ErrUserExists
-	}
-	now := time.Now().UTC()
-	c.users[user] = storedPassword{
-		Hash: string(hash), Managed: true, Role: role, MustChange: mustChange,
-		ChangedAt: now, CreatedAt: now,
-	}
-	return c.saveLocked()
+	return c.mutate(func(users map[string]storedPassword) error {
+		if _, taken := users[user]; taken {
+			return ErrUserExists
+		}
+		now := time.Now().UTC()
+		users[user] = storedPassword{
+			Hash: string(hash), Managed: true, Role: role, MustChange: mustChange,
+			ChangedAt: now, CreatedAt: now,
+		}
+		return nil
+	})
 }
 
 // setRole changes the role of a managed user.
@@ -300,33 +433,33 @@ func (c *credentials) setRole(user, role string) error {
 	if !validRole(role) {
 		return ErrInvalidRole
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	sp, ok := c.users[user]
-	if !ok || !sp.Managed {
-		if c.envCredential(user) != "" {
-			return ErrEnvUser
+	return c.mutate(func(users map[string]storedPassword) error {
+		sp, ok := users[user]
+		if !ok || !sp.Managed {
+			if c.envCredential(user) != "" {
+				return ErrEnvUser
+			}
+			return ErrUserNotFound
 		}
-		return ErrUserNotFound
-	}
-	sp.Role = role
-	c.users[user] = sp
-	return c.saveLocked()
+		sp.Role = role
+		users[user] = sp
+		return nil
+	})
 }
 
 // deleteUser removes a managed user.
 func (c *credentials) deleteUser(user string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	sp, ok := c.users[user]
-	if !ok || !sp.Managed {
-		if c.envCredential(user) != "" {
-			return ErrEnvUser
+	return c.mutate(func(users map[string]storedPassword) error {
+		sp, ok := users[user]
+		if !ok || !sp.Managed {
+			if c.envCredential(user) != "" {
+				return ErrEnvUser
+			}
+			return ErrUserNotFound
 		}
-		return ErrUserNotFound
-	}
-	delete(c.users, user)
-	return c.saveLocked()
+		delete(users, user)
+		return nil
+	})
 }
 
 // names returns every known user name, sorted.

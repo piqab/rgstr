@@ -3,8 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"log"
-	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
 )
@@ -50,7 +49,7 @@ type GCResult struct {
 const MaxGCListed = 200
 
 // RunGC runs a regular garbage collection pass.
-func (fs *Filesystem) RunGC() error {
+func (fs *Store) RunGC() error {
 	_, err := fs.CollectGarbage(GCOptions{})
 	return err
 }
@@ -58,8 +57,9 @@ func (fs *Filesystem) RunGC() error {
 // CollectGarbage performs a mark-and-sweep garbage collection pass.
 //
 // The algorithm:
-//  1. Acquire the global write lock so no blobs can be written or deleted
-//     concurrently during the sweep.
+//  1. Acquire the global write lock so no blobs can be linked or manifests
+//     written concurrently during the sweep — in this process, and through
+//     the Locker in every process sharing the storage.
 //  2. Mark: in each repository, start from the manifests its tags point to
 //     and follow every digest they reference (child manifests of an index,
 //     config, layers). Everything reached is in use.
@@ -71,10 +71,7 @@ func (fs *Filesystem) RunGC() error {
 // or tag that references them. Blobs linked to a repository and by-digest
 // manifests written within cfg.UploadTTL are therefore kept even when nothing
 // references them yet, so GC never deletes the pieces of an in-progress push.
-//
-// Because the write lock is held throughout, the window where a blob could be
-// concurrently deleted or written is closed, so there are no TOCTOU races.
-func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
+func (fs *Store) CollectGarbage(opts GCOptions) (GCResult, error) {
 	var res GCResult
 	log.Printf("gc: starting (dry run: %v, ignore grace: %v)", opts.DryRun, opts.IgnoreGrace)
 
@@ -86,68 +83,70 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 	} else {
 		fs.gcMu.Lock()
 		defer fs.gcMu.Unlock()
+		if fs.dist != nil {
+			release, err := fs.dist.Exclusive(bg)
+			if err != nil {
+				return res, err
+			}
+			defer release()
+		}
 	}
 
 	// ── Phase 1: Mark ─────────────────────────────────────────────────────
 	referenced := make(map[string]bool) // blob hex hash → in use
-	recent := func(d os.DirEntry) bool {
-		if opts.IgnoreGrace {
-			return false
-		}
-		info, err := d.Info()
-		return err == nil && time.Since(info.ModTime()) < fs.cfg.UploadTTL
+	recent := func(info FileInfo) bool {
+		return !opts.IgnoreGrace && time.Since(info.ModTime) < fs.cfg.UploadTTL
 	}
 
 	type repoState struct {
 		roots     []string          // manifest hex hashes that are in use
 		manifests map[string]string // by-digest hex → file path
 	}
-	repos := make(map[string]*repoState) // repo dir → state
-	repo := func(dir string) *repoState {
-		st, ok := repos[dir]
+	repos := make(map[string]*repoState) // repo name → state
+	repo := func(name string) *repoState {
+		st, ok := repos[name]
 		if !ok {
 			st = &repoState{manifests: make(map[string]string)}
-			repos[dir] = st
+			repos[name] = st
 		}
 		return st
 	}
 
 	// Layout: <repo>/manifests/by-digest/<hex>, <repo>/manifests/tags/<tag>,
 	// <repo>/layers/<hex>.
-	reposDir := filepath.Join(fs.root, "repositories")
-	expired := func(repoDir string) ExpireSet {
-		name, _ := filepath.Rel(reposDir, repoDir)
-		return opts.Expire[filepath.ToSlash(name)]
-	}
-	if err := filepath.WalkDir(reposDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		dir := filepath.Dir(path)
-		parent := filepath.Dir(dir)
+	var links []string // layer link paths, for phase 2b
+	if err := fs.d.Walk(bg, "repositories", func(p string, info FileInfo) error {
+		dir, name := path.Split(p)
+		dir = strings.TrimSuffix(dir, "/")
+		parent := path.Dir(dir)
 		switch {
-		case filepath.Base(dir) == "by-digest" && filepath.Base(parent) == "manifests":
-			st := repo(filepath.Dir(parent))
-			st.manifests[d.Name()] = path
-			if recent(d) {
-				if exp := expired(filepath.Dir(parent)); !exp.has(exp.Manifests, d.Name()) {
-					st.roots = append(st.roots, d.Name())
+		case path.Base(dir) == "by-digest" && path.Base(parent) == "manifests":
+			repoName := strings.TrimPrefix(path.Dir(parent), "repositories/")
+			st := repo(repoName)
+			st.manifests[name] = p
+			if recent(info) {
+				if exp := opts.Expire[repoName]; !exp.has(exp.Manifests, name) {
+					st.roots = append(st.roots, name)
 				}
 			}
 
-		case filepath.Base(dir) == "tags" && filepath.Base(parent) == "manifests":
-			b, err := os.ReadFile(path)
+		case path.Base(dir) == "tags" && path.Base(parent) == "manifests":
+			b, err := fs.d.GetContent(bg, p)
 			if err != nil {
 				return nil
 			}
 			if hexHash := strings.TrimSpace(string(b)); len(hexHash) == 64 {
-				st := repo(filepath.Dir(parent))
+				st := repo(strings.TrimPrefix(path.Dir(parent), "repositories/"))
 				st.roots = append(st.roots, hexHash)
 			}
 
-		case filepath.Base(dir) == "layers" && recent(d):
-			if exp := expired(parent); !exp.has(exp.Blobs, d.Name()) {
-				referenced[d.Name()] = true
+		case path.Base(dir) == "layers":
+			links = append(links, p)
+			if recent(info) {
+				repoName := strings.TrimPrefix(parent, "repositories/")
+				if exp := opts.Expire[repoName]; !exp.has(exp.Blobs, name) {
+					referenced[name] = true
+				}
 			}
 		}
 		return nil
@@ -164,15 +163,15 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 		for len(stack) > 0 {
 			hexHash := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			path, ok := st.manifests[hexHash]
-			if !ok || reachable[path] {
+			p, ok := st.manifests[hexHash]
+			if !ok || reachable[p] {
 				continue
 			}
-			reachable[path] = true
+			reachable[p] = true
 			// Some clients also upload the manifest as a blob; keep it.
 			referenced[hexHash] = true
 
-			raw, err := os.ReadFile(path)
+			raw, err := fs.d.GetContent(bg, p)
 			if err != nil {
 				continue
 			}
@@ -188,96 +187,78 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 	}
 
 	// ── Phase 2: Sweep unreferenced blobs ─────────────────────────────────
-	blobsRoot := filepath.Join(fs.root, "blobs", "sha256")
-
-	if err := filepath.WalkDir(blobsRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
+	removed := map[string]bool{}
+	present := map[string]bool{} // every blob found
+	var unreferenced []string
+	if err := fs.d.Walk(bg, "blobs/sha256", func(p string, info FileInfo) error {
 		// Reconstruct the full hex hash from the 2-char parent dir + filename.
-		prefix := filepath.Base(filepath.Dir(path))
-		suffix := d.Name()
-		if len(prefix) != 2 || strings.HasPrefix(suffix, ".") {
-			return nil
-		}
+		dir, suffix := path.Split(p)
+		prefix := path.Base(dir)
 		hexHash := prefix + suffix
-		if len(hexHash) != 64 {
+		if len(prefix) != 2 || len(hexHash) != 64 {
 			return nil
 		}
+		present[hexHash] = true
 		if referenced[hexHash] {
 			return nil
 		}
-		var size int64
-		if info, err := d.Info(); err == nil {
-			size = info.Size()
-		}
-		if !opts.DryRun {
-			if err := os.Remove(path); err != nil {
-				return nil
-			}
-			log.Printf("gc: removed blob sha256:%s", hexHash)
-		}
+		unreferenced = append(unreferenced, p)
 		res.BlobsRemoved++
-		res.BytesFreed += size
+		res.BytesFreed += info.Size
 		return nil
 	}); err != nil {
 		return res, err
+	}
+	if !opts.DryRun {
+		for _, p := range unreferenced {
+			if err := fs.d.Delete(bg, p); err != nil {
+				continue
+			}
+			dir, suffix := path.Split(p)
+			removed[path.Base(dir)+suffix] = true
+			log.Printf("gc: removed blob sha256:%s", path.Base(dir)+suffix)
+		}
 	}
 
 	// ── Phase 2b: Drop repository links to removed blobs ──────────────────
 	// Otherwise a repo would regain access if the same content were later
 	// uploaded to a different repository.
-	filepath.WalkDir(reposDir, func(path string, d os.DirEntry, err error) error {
-		if opts.DryRun {
-			return filepath.SkipAll
+	if !opts.DryRun {
+		for _, p := range links {
+			hexHash := path.Base(p)
+			if removed[hexHash] || !present[hexHash] {
+				fs.d.Delete(bg, p)
+			}
 		}
-		if err != nil || d.IsDir() || filepath.Base(filepath.Dir(path)) != "layers" {
-			return nil
-		}
-		blob := DigestFromHex(d.Name())
-		if !blob.Valid() {
-			return nil
-		}
-		if _, err := os.Stat(fs.blobPath(blob)); os.IsNotExist(err) {
-			os.Remove(path)
-		}
-		return nil
-	})
+	}
 
 	// ── Phase 3: Remove unreachable by-digest manifests ──────────────────
-	for dir, st := range repos {
-		name, _ := filepath.Rel(reposDir, dir)
-		for hexHash, path := range st.manifests {
-			if reachable[path] {
+	for name, st := range repos {
+		for hexHash, p := range st.manifests {
+			if reachable[p] {
 				continue
 			}
 			if !opts.DryRun {
-				if err := os.Remove(path); err != nil {
+				if err := fs.d.Delete(bg, p); err != nil {
 					continue
 				}
-				log.Printf("gc: removed manifest %s@sha256:%s", filepath.ToSlash(name), hexHash)
+				log.Printf("gc: removed manifest %s@sha256:%s", name, hexHash)
 			}
 			res.ManifestsRemoved++
 			if len(res.Manifests) < MaxGCListed {
-				res.Manifests = append(res.Manifests, filepath.ToSlash(name)+"@sha256:"+hexHash)
+				res.Manifests = append(res.Manifests, name+"@sha256:"+hexHash)
 			}
 		}
 	}
 
 	// ── Phase 4: Clean stale upload sessions ──────────────────────────────
-	uploadsDir := filepath.Join(fs.root, "uploads")
-	entries, _ := os.ReadDir(uploadsDir)
+	entries, _ := fs.d.List(bg, "uploads")
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir {
 			continue
 		}
-		infoPath := filepath.Join(uploadsDir, e.Name(), "info.json")
-		raw, err := os.ReadFile(infoPath)
+		info, err := fs.loadUploadInfo(e.Name)
 		if err != nil {
-			continue
-		}
-		var info UploadInfo
-		if json.Unmarshal(raw, &info) != nil {
 			continue
 		}
 		if time.Since(info.StartedAt) > fs.cfg.UploadTTL {
@@ -285,10 +266,10 @@ func (fs *Filesystem) CollectGarbage(opts GCOptions) (GCResult, error) {
 			if opts.DryRun {
 				continue
 			}
-			os.RemoveAll(filepath.Join(uploadsDir, e.Name()))
-			fs.uploadMu.Delete(e.Name())
+			fs.d.Delete(bg, fs.uploadDir(e.Name))
+			fs.uploadMu.Delete(e.Name)
 			log.Printf("gc: removed stale upload %s (repo=%s, age=%s)",
-				e.Name(), info.Repo, time.Since(info.StartedAt).Round(time.Second))
+				e.Name, info.Repo, time.Since(info.StartedAt).Round(time.Second))
 		}
 	}
 

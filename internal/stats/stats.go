@@ -2,10 +2,13 @@
 package stats
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Counter tracks how many times each repository has been pulled.
@@ -14,6 +17,62 @@ type Counter struct {
 	mu      sync.Mutex
 	pulls   map[string]int64
 	dataDir string
+
+	shared  Shared           // counts kept by all processes; nil: stats.json
+	pending map[string]int64 // pulls not yet added to shared
+}
+
+// Shared keeps counts for several rgstr processes (PostgreSQL).
+type Shared interface {
+	AddPulls(ctx context.Context, delta map[string]int64) error
+	Pulls(ctx context.Context) (map[string]int64, error)
+}
+
+// flushInterval is how often pulls are added to the shared counts.
+const flushInterval = 5 * time.Second
+
+// NewShared creates a Counter on shared counts; pulls are added to them
+// every few seconds, and the totals of all processes are read back.
+func NewShared(s Shared) *Counter {
+	c := &Counter{pulls: map[string]int64{}, shared: s, pending: map[string]int64{}}
+	c.flush()
+	go func() {
+		for range time.Tick(flushInterval) {
+			c.flush()
+		}
+	}()
+	return c
+}
+
+func (c *Counter) flush() {
+	c.mu.Lock()
+	delta := c.pending
+	c.pending = map[string]int64{}
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if len(delta) > 0 {
+		if err := c.shared.AddPulls(ctx, delta); err != nil {
+			log.Printf("stats: %v", err)
+			c.mu.Lock() // keep them for the next try
+			for k, v := range delta {
+				c.pending[k] += v
+			}
+			c.mu.Unlock()
+			return
+		}
+	}
+	totals, err := c.shared.Pulls(ctx)
+	if err != nil {
+		log.Printf("stats: %v", err)
+		return
+	}
+	c.mu.Lock()
+	for k, v := range c.pending { // pulls since the swap above
+		totals[k] += v
+	}
+	c.pulls = totals
+	c.mu.Unlock()
 }
 
 // Snapshot is a point-in-time copy of all counters.
@@ -35,6 +94,11 @@ func New(dataDir string) *Counter {
 func (c *Counter) RecordPull(repo string) {
 	c.mu.Lock()
 	c.pulls[repo]++
+	if c.shared != nil {
+		c.pending[repo]++
+		c.mu.Unlock()
+		return
+	}
 	snap := c.snapshot()
 	c.mu.Unlock()
 	c.persist(snap)

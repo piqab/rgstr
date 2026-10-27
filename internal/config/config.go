@@ -13,7 +13,16 @@ type Config struct {
 	Version string
 
 	ListenAddr  string
-	StorageRoot string
+	StorageRoot string // filesystem driver: the data directory
+
+	// StorageDriver is "filesystem" (default) or "s3" (RGSTR_STORAGE_DRIVER).
+	StorageDriver string
+	StorageS3     StorageS3Config
+
+	// DatabaseURL turns on cluster mode (RGSTR_DATABASE_URL): several rgstr
+	// processes share users, projects, settings, sessions and the audit
+	// log through PostgreSQL, and coordinate garbage collection.
+	DatabaseURL string
 	TLSCert     string
 	TLSKey      string
 
@@ -71,6 +80,19 @@ type Config struct {
 	OIDC OIDCConfig
 
 	Backup BackupConfig
+}
+
+// Cluster reports whether processes share state through a database.
+func (c *Config) Cluster() bool { return c.DatabaseURL != "" }
+
+// StorageS3Config is the bucket of the s3 storage driver (RGSTR_STORAGE_S3_*).
+type StorageS3Config struct {
+	Bucket string
+	Prefix string
+	S3     S3Config
+	// Redirect sends blob downloads to presigned S3 URLs: clients fetch
+	// layers straight from the store. Clients must reach the S3 endpoint.
+	Redirect bool
 }
 
 // BackupConfig schedules backups of the storage root (RGSTR_BACKUP_*).
@@ -148,8 +170,23 @@ func (o OIDCConfig) Enabled() bool { return o.Issuer != "" && o.ClientID != "" }
 // Load reads configuration from environment variables.
 func Load() *Config {
 	return &Config{
-		ListenAddr:  env("RGSTR_ADDR", ":5000"),
-		StorageRoot: env("RGSTR_STORAGE", "./data"),
+		ListenAddr:    env("RGSTR_ADDR", ":5000"),
+		StorageRoot:   env("RGSTR_STORAGE", "./data"),
+		StorageDriver: env("RGSTR_STORAGE_DRIVER", map[bool]string{true: "s3", false: "filesystem"}[os.Getenv("RGSTR_STORAGE_S3_BUCKET") != ""]),
+		StorageS3: StorageS3Config{
+			Bucket: env("RGSTR_STORAGE_S3_BUCKET", ""),
+			Prefix: env("RGSTR_STORAGE_S3_PREFIX", ""),
+			S3: S3Config{
+				Endpoint:     strings.TrimSuffix(env("RGSTR_STORAGE_S3_ENDPOINT", ""), "/"),
+				Region:       env("RGSTR_STORAGE_S3_REGION", env("AWS_REGION", "us-east-1")),
+				AccessKey:    env("RGSTR_STORAGE_S3_ACCESS_KEY", os.Getenv("AWS_ACCESS_KEY_ID")),
+				SecretKey:    env("RGSTR_STORAGE_S3_SECRET_KEY", os.Getenv("AWS_SECRET_ACCESS_KEY")),
+				SessionToken: os.Getenv("AWS_SESSION_TOKEN"),
+				PathStyle:    envBool("RGSTR_STORAGE_S3_PATH_STYLE", os.Getenv("RGSTR_STORAGE_S3_ENDPOINT") != ""),
+			},
+			Redirect: envBool("RGSTR_STORAGE_S3_REDIRECT", false),
+		},
+		DatabaseURL: os.Getenv("RGSTR_DATABASE_URL"),
 		TLSCert:     env("RGSTR_TLS_CERT", ""),
 		TLSKey:      env("RGSTR_TLS_KEY", ""),
 

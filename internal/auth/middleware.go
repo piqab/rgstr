@@ -50,7 +50,7 @@ type Handler struct {
 	meta     *meta.Store // projects; nil = none
 	sessions sessionState
 	ldap     ldapChecker // nil: LDAP off
-	oidc     *oidcAuth // nil: OIDC off
+	oidc     *oidcAuth   // nil: OIDC off
 }
 
 // SetMeta enables projects (membership and public flags) from m.
@@ -62,7 +62,13 @@ func (h *Handler) SetAudit(log *audit.Log) { h.audit = log }
 // NewHandler creates an auth handler that protects inner. It exits if the
 // stored passwords file (<storage>/users.json) exists but cannot be read.
 func NewHandler(cfg *config.Config, tokenSvc *TokenService, inner http.Handler) *Handler {
-	creds, err := loadCredentials(cfg)
+	return NewSharedHandler(cfg, tokenSvc, inner, nil)
+}
+
+// NewSharedHandler is NewHandler with the stored users in users (shared
+// by the processes of a cluster) instead of <storage>/users.json.
+func NewSharedHandler(cfg *config.Config, tokenSvc *TokenService, inner http.Handler, users UsersBackend) *Handler {
+	creds, err := openCredentials(cfg, users)
 	if err != nil {
 		log.Fatalf("auth: load stored passwords: %v", err)
 	}

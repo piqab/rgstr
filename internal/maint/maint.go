@@ -29,6 +29,9 @@ type Runner struct {
 
 	// OnGC, when set, is told about every finished non-dry run.
 	OnGC func(bytesFreed int64, err error)
+	// Claim, when set, decides whether this process runs a scheduled
+	// job now (in a cluster, one process per interval does).
+	Claim func(job string, interval time.Duration) bool
 
 	running sync.Mutex    // held while a run is in progress
 	wake    chan struct{} // reschedule after a settings change
@@ -132,6 +135,9 @@ func (r *Runner) Start(ctx context.Context) {
 			case <-r.wake:
 				// Interval changed: reschedule from now.
 			case <-timer:
+				if r.Claim != nil && !r.Claim("gc", interval) {
+					continue // another process of the cluster runs it
+				}
 				// Retention first, so GC frees the space of expired tags.
 				if _, err := r.RunRetention("schedule", "", false); err != nil {
 					log.Printf("retention error: %v", err)

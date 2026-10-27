@@ -4,6 +4,7 @@ package audit
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,7 +66,9 @@ const MaxSize = 10 << 20
 
 // Log appends entries to the audit log.
 type Log struct {
-	path string // empty: in memory (tests)
+	path   string // empty: in memory (tests)
+	shared Shared // entries kept by all processes; nil: the file
+	queue  chan Entry
 
 	onAdd func(action string) // metrics hook; set before use
 
@@ -73,6 +76,71 @@ type Log struct {
 	f    *os.File
 	size int64
 	mem  []Entry
+}
+
+// Shared keeps the log of several rgstr processes (PostgreSQL).
+type Shared interface {
+	AddAudit(ctx context.Context, times []time.Time, entries [][]byte) error
+	RecentAudit(ctx context.Context, before time.Time, limit int) ([][]byte, error)
+	PruneAudit(ctx context.Context, before time.Time) error
+}
+
+// Retention is how long a shared log keeps entries.
+const Retention = 90 * 24 * time.Hour
+
+// OpenShared writes the log to s. Entries are written in batches in the
+// background, and each is also printed to the standard output as JSON, for
+// log collectors.
+func OpenShared(s Shared) *Log {
+	l := &Log{shared: s, queue: make(chan Entry, 4096)}
+	go l.writer()
+	return l
+}
+
+func (l *Log) writer() {
+	tick := time.NewTicker(time.Second)
+	prune := time.NewTicker(time.Hour)
+	defer tick.Stop()
+	defer prune.Stop()
+	var batch []Entry
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		times := make([]time.Time, len(batch))
+		raws := make([][]byte, len(batch))
+		for i, e := range batch {
+			times[i] = e.Time
+			raws[i], _ = json.Marshal(e)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := l.shared.AddAudit(ctx, times, raws)
+		cancel()
+		if err != nil {
+			log.Printf("audit: write: %v", err)
+			if len(batch) < 10000 {
+				return // retry with the next batch
+			}
+		}
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case e := <-l.queue:
+			batch = append(batch, e)
+			if len(batch) >= 200 {
+				flush()
+			}
+		case <-tick.C:
+			flush()
+		case <-prune.C:
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			if err := l.shared.PruneAudit(ctx, time.Now().Add(-Retention)); err != nil {
+				log.Printf("audit: prune: %v", err)
+			}
+			cancel()
+		}
+	}
 }
 
 // Open opens <root>/audit.log for appending. An empty root keeps entries in
@@ -114,6 +182,17 @@ func (l *Log) Add(e Entry) {
 	}
 	if l.onAdd != nil {
 		l.onAdd(e.Action)
+	}
+	if l.shared != nil {
+		if raw, err := json.Marshal(e); err == nil {
+			fmt.Fprintf(os.Stdout, "audit %s\n", raw)
+		}
+		select {
+		case l.queue <- e:
+		default:
+			log.Printf("audit: queue full, entry dropped: %s %s", e.Action, e.Resource)
+		}
+		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -194,6 +273,9 @@ func (l *Log) Find(q Query) ([]Entry, error) {
 	if q.Limit <= 0 {
 		q.Limit = 200
 	}
+	if l.shared != nil {
+		return l.findShared(q)
+	}
 	var all []Entry
 	l.mu.Lock()
 	if l.path == "" {
@@ -216,6 +298,52 @@ func (l *Log) Find(q Query) ([]Entry, error) {
 		}
 	}
 	return out, nil
+}
+
+// findShared pages through the shared log, newest first, until q.Limit
+// entries match (or 20000 were looked at).
+func (l *Log) findShared(q Query) ([]Entry, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var out []Entry
+	before := q.Before
+	for scanned := 0; scanned < 20000 && len(out) < q.Limit; {
+		raws, err := l.shared.RecentAudit(ctx, before, 1000)
+		if err != nil {
+			return nil, err
+		}
+		for _, raw := range raws {
+			var e Entry
+			if json.Unmarshal(raw, &e) != nil {
+				continue
+			}
+			before = e.Time
+			if q.match(e) && len(out) < q.Limit {
+				out = append(out, e)
+			}
+		}
+		scanned += len(raws)
+		if len(raws) < 1000 {
+			break
+		}
+	}
+	return out, nil
+}
+
+// Export returns every entry of the file log, oldest first (migration).
+func (l *Log) Export() ([]Entry, error) {
+	if l.path == "" {
+		return append([]Entry(nil), l.mem...), nil
+	}
+	var all []Entry
+	for _, p := range []string{l.path + ".1", l.path} {
+		entries, err := readFile(p)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, entries...)
+	}
+	return all, nil
 }
 
 func readFile(path string) ([]Entry, error) {

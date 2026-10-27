@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,7 +12,9 @@ import (
 
 	"rgstr/internal/auth"
 	"rgstr/internal/config"
+	"rgstr/internal/db"
 	"rgstr/internal/registry"
+	"rgstr/internal/s3"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
 )
@@ -26,20 +29,42 @@ func main() {
 	cfg := config.Load()
 	cfg.Version = displayVersion(version)
 
-	unlock, err := storage.Lock(cfg.StorageRoot)
+	var database *db.DB
+	if cfg.Cluster() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		var err error
+		database, err = db.Open(ctx, cfg.DatabaseURL)
+		cancel()
+		if err != nil {
+			log.Fatalf("database: %v", err)
+		}
+		defer database.Close()
+	} else if cfg.StorageDriver == "filesystem" {
+		// One process per data directory; a cluster coordinates through
+		// the database instead.
+		unlock, err := storage.Lock(cfg.StorageRoot)
+		if err != nil {
+			log.Fatalf("storage: %v", err)
+		}
+		defer unlock()
+	}
+
+	store, err := openStore(cfg)
 	if err != nil {
 		log.Fatalf("storage: %v", err)
 	}
-	defer unlock()
-
-	store, err := storage.NewFilesystem(cfg.StorageRoot, cfg)
-	if err != nil {
-		log.Fatalf("storage init: %v", err)
+	if cfg.StorageDriver == "s3" && database == nil {
+		log.Printf("storage: s3 without RGSTR_DATABASE_URL: run only one rgstr on this bucket")
 	}
 
 	tokenSvc := auth.NewTokenService(cfg)
-	counter := stats.New(cfg.StorageRoot)
-	reg := registry.New(store, tokenSvc, cfg, counter)
+	var counter *stats.Counter
+	if database != nil {
+		counter = stats.NewShared(database)
+	} else {
+		counter = stats.New(cfg.StorageRoot)
+	}
+	reg := registry.NewCluster(store, tokenSvc, cfg, counter, database)
 
 	mux := http.NewServeMux()
 	reg.Mount(mux)
@@ -56,8 +81,12 @@ func main() {
 	defer gcCancel()
 	reg.Start(gcCtx)
 
-	log.Printf("rgstr %s listening on %s  storage=%s  auth=%v",
-		cfg.Version, cfg.ListenAddr, cfg.StorageRoot, cfg.AuthEnabled)
+	where := cfg.StorageRoot
+	if cfg.StorageDriver == "s3" {
+		where = "s3://" + cfg.StorageS3.Bucket + "/" + cfg.StorageS3.Prefix
+	}
+	log.Printf("rgstr %s listening on %s  storage=%s  auth=%v  cluster=%v",
+		cfg.Version, cfg.ListenAddr, where, cfg.AuthEnabled, database != nil)
 
 	go func() {
 		var serveErr error
@@ -81,6 +110,21 @@ func main() {
 		log.Printf("shutdown: %v", err)
 	}
 	log.Println("stopped")
+}
+
+// openStore opens the storage driver of cfg.
+func openStore(cfg *config.Config) (*storage.Store, error) {
+	switch cfg.StorageDriver {
+	case "filesystem":
+		return storage.NewFilesystem(cfg.StorageRoot, cfg)
+	case "s3":
+		c, err := s3.New(cfg.StorageS3.S3, cfg.StorageS3.Bucket)
+		if err != nil {
+			return nil, fmt.Errorf("RGSTR_STORAGE_S3_*: %w", err)
+		}
+		return storage.New(storage.NewS3Driver(c, cfg.StorageS3.Prefix, cfg.StorageS3.Redirect), cfg), nil
+	}
+	return nil, fmt.Errorf("RGSTR_STORAGE_DRIVER %q: want filesystem or s3", cfg.StorageDriver)
 }
 
 // displayVersion adds the "v" prefix to numeric versions ("1.5.0" → "v1.5.0").
