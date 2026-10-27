@@ -37,7 +37,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      mux,
+		Handler:      reg.Handler(mux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 0, // streaming blobs must not time out
 		IdleTimeout:  120 * time.Second,

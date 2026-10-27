@@ -27,6 +27,9 @@ type Runner struct {
 	meta  *meta.Store
 	ops   *ops.Ops
 
+	// OnGC, when set, is told about every finished non-dry run.
+	OnGC func(bytesFreed int64, err error)
+
 	running sync.Mutex    // held while a run is in progress
 	wake    chan struct{} // reschedule after a settings change
 
@@ -160,6 +163,9 @@ func (r *Runner) Run(trigger, user string, opts storage.GCOptions) (meta.GCRun, 
 	}
 	if !opts.DryRun && err == nil {
 		run.Freed = r.reconcile()
+	}
+	if !opts.DryRun && r.OnGC != nil {
+		r.OnGC(run.BytesFreed, err)
 	}
 
 	r.ops.Audit(actor(user), audit.GCRun, "", gcDetail(run), err)

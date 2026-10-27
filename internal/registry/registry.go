@@ -18,12 +18,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"rgstr/internal/audit"
 	"rgstr/internal/auth"
 	"rgstr/internal/config"
 	"rgstr/internal/maint"
 	"rgstr/internal/meta"
+	"rgstr/internal/metrics"
 	"rgstr/internal/ops"
 	"rgstr/internal/stats"
 	"rgstr/internal/storage"
@@ -60,6 +63,11 @@ type Registry struct {
 	meta        *meta.Store
 	maint       *maint.Runner
 	hooks       *webhook.Notifier
+	metrics     *metrics.Registry // nil unless RGSTR_METRICS_ENABLED
+
+	sizeMu sync.Mutex
+	size   int64
+	sizeAt time.Time
 }
 
 // registryHost is how clients address the registry, taken from the token
@@ -89,7 +97,7 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 	o := ops.New(store, m, alog)
 	hooks := webhook.New(m, registryHost(cfg))
 	o.SetNotifier(hooks)
-	return &Registry{
+	r := &Registry{
 		store:    store,
 		tokenSvc: tokenSvc,
 		cfg:      cfg,
@@ -99,6 +107,12 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 		maint:    maint.New(cfg, store, m, o),
 		hooks:    hooks,
 	}
+	if cfg.MetricsEnabled {
+		r.metrics = metrics.New(cfg.Version, r.gauges)
+		alog.OnAdd(r.metrics.Event)
+		r.maint.OnGC = r.metrics.GCRun
+	}
+	return r
 }
 
 // Mount registers the registry handler on mux. The auth middleware is always
@@ -119,6 +133,9 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("/stats", reg.handleStats)
+	if reg.metrics != nil {
+		mux.Handle("/metrics", reg.metrics)
+	}
 
 	ui.New(ui.Deps{
 		Auth:    reg.authHandler,
@@ -786,4 +803,35 @@ func (reg *Registry) visible(subject string, repos []string) []string {
 		}
 	}
 	return out
+}
+
+// Handler wraps the server's root handler: with metrics enabled, every
+// request is counted.
+func (reg *Registry) Handler(h http.Handler) http.Handler {
+	if reg.metrics == nil {
+		return h
+	}
+	return reg.metrics.Instrument(h)
+}
+
+// gauges computes scrape-time metrics. The data size walk is cached for a
+// minute: it reads every blob's size.
+func (reg *Registry) gauges() metrics.Gauges {
+	g := metrics.Gauges{Uploads: reg.store.UploadsInProgress()}
+	if repos, err := reg.store.ListRepositories(); err == nil {
+		g.Repositories = len(repos)
+	}
+	reg.sizeMu.Lock()
+	if time.Since(reg.sizeAt) > time.Minute {
+		reg.size, reg.sizeAt = reg.store.DataSize(), time.Now()
+	}
+	g.StorageBytes = reg.size
+	reg.sizeMu.Unlock()
+	if d, err := reg.store.Disk(); err == nil && d.Supported {
+		g.DiskSupported, g.DiskTotalBytes, g.DiskFreeBytes = true, d.Total, d.Free
+	}
+	if h := reg.maint.History(); len(h) > 0 {
+		g.LastGC = h[0].Start
+	}
+	return g
 }

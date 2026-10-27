@@ -198,6 +198,7 @@ cp .env.example .env
 | `RGSTR_READONLY_USERS` | — | Пользователи только с правом pull |
 | `RGSTR_TRUSTED_PROXIES` | loopback и частные сети | Прокси, чьему `X-Forwarded-For` верить при записи IP клиента; `none` — не верить никому (см. [fail2ban](#fail2ban)) |
 | `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
+| `RGSTR_METRICS_ENABLED` | `false` | Метрики Prometheus на `/metrics` (см. [Метрики](#метрики)) |
 | `RGSTR_GC_INTERVAL` | `1h` | Интервал запуска сборщика мусора |
 | `RGSTR_UPLOAD_TTL` | `24h` | Через сколько удалять незавершённые загрузки. Это же льготный период GC: загруженное недавно не удаляется, даже если на него ещё не указывает тег |
 
@@ -487,6 +488,22 @@ RGSTR_TLS_KEY=/etc/letsencrypt/live/registry.example.com/privkey.pem \
 Или используйте nginx/Caddy/HAProxy как TLS-терминатор перед реестром.
 
 ---
+
+## Метрики
+
+С `RGSTR_METRICS_ENABLED=true` реестр отдаёт метрики в формате Prometheus на `GET /metrics` (без авторизации — открывайте только внутри сети мониторинга или закройте путь на reverse proxy):
+
+| Метрика | Тип | Что это |
+|---|---|---|
+| `rgstr_build_info{version}` | gauge | версия |
+| `rgstr_http_requests_total{method,code}` | counter | HTTP-запросы |
+| `rgstr_events_total{action}` | counter | события журнала: `push`, `pull`, `delete_tag`, `login`, `login_failed`, `gc_run`, … |
+| `rgstr_gc_runs_total{result}`, `rgstr_gc_freed_bytes_total` | counter | запуски GC и освобождённое место |
+| `rgstr_gc_last_run_timestamp_seconds` | gauge | время последнего GC |
+| `rgstr_repositories`, `rgstr_storage_bytes`, `rgstr_uploads_in_progress` | gauge | репозитории, данные на диске (пересчёт раз в минуту), незавершённые загрузки |
+| `rgstr_disk_total_bytes`, `rgstr_disk_free_bytes` | gauge | размер и свободное место тома с данными |
+
+Пример алерта: `rgstr_disk_free_bytes / rgstr_disk_total_bytes < 0.1`, всплеск `rate(rgstr_events_total{action="login_failed"}[5m])`.
 
 ## fail2ban
 

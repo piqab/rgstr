@@ -60,6 +60,10 @@ type Config struct {
 	// Examples: "public/**", "library/ubuntu", "*"
 	PublicRepos []string
 
+	// MetricsEnabled serves Prometheus metrics at /metrics
+	// (RGSTR_METRICS_ENABLED).
+	MetricsEnabled bool
+
 	GCInterval time.Duration
 	UploadTTL  time.Duration // stale upload sessions older than this are GC'd
 }
@@ -87,6 +91,8 @@ func Load() *Config {
 		ReadOnlyUsers:  parseList(env("RGSTR_READONLY_USERS", "")),
 		PublicRepos:    parseList(env("RGSTR_PUBLIC_REPOS", "")),
 		TrustedProxies: trustedProxies(),
+
+		MetricsEnabled: envBool("RGSTR_METRICS_ENABLED", false),
 
 		GCInterval: envDuration("RGSTR_GC_INTERVAL", time.Hour),
 		UploadTTL:  envDuration("RGSTR_UPLOAD_TTL", 24*time.Hour),

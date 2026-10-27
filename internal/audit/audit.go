@@ -65,6 +65,8 @@ const MaxSize = 10 << 20
 type Log struct {
 	path string // empty: in memory (tests)
 
+	onAdd func(action string) // metrics hook; set before use
+
 	mu   sync.Mutex
 	f    *os.File
 	size int64
@@ -108,6 +110,9 @@ func (l *Log) Add(e Entry) {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
+	if l.onAdd != nil {
+		l.onAdd(e.Action)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.path == "" {
@@ -144,6 +149,9 @@ func (l *Log) rotateLocked() {
 		log.Printf("audit: reopen: %v", err)
 	}
 }
+
+// OnAdd calls fn with the action of every recorded entry (for metrics).
+func (l *Log) OnAdd(fn func(action string)) { l.onAdd = fn }
 
 // Query filters entries.
 type Query struct {

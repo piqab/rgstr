@@ -1060,3 +1060,15 @@ func (fs *Filesystem) addManifestBlobsHexLocked(repo string, content []byte, blo
 		}
 	}
 }
+
+// UploadsInProgress returns the number of unfinished upload sessions.
+func (fs *Filesystem) UploadsInProgress() int {
+	entries, _ := os.ReadDir(filepath.Join(fs.root, "uploads"))
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			n++
+		}
+	}
+	return n
+}

@@ -21,7 +21,9 @@ func sessionHandler(t *testing.T) (*Handler, *meta.Store) {
 	return h, m
 }
 
-func bearerOf(tok string) map[string]string { return map[string]string{"Authorization": "Bearer " + tok} }
+func bearerOf(tok string) map[string]string {
+	return map[string]string{"Authorization": "Bearer " + tok}
+}
 
 func TestSessionLifecycle(t *testing.T) {
 	h, m := sessionHandler(t)
