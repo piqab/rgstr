@@ -87,6 +87,14 @@ func (r *Runner) NextRun() time.Time {
 	return r.nextRun
 }
 
+// Hold waits for a running GC to finish and keeps GC from starting until
+// the returned function is called (backups need blobs to stay). Runs
+// requested meanwhile return ErrBusy.
+func (r *Runner) Hold() (release func()) {
+	r.running.Lock()
+	return r.running.Unlock
+}
+
 // Running reports whether a run is in progress.
 func (r *Runner) Running() bool {
 	if r.running.TryLock() {

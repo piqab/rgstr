@@ -50,6 +50,8 @@ type Gauges struct {
 	DiskSupported  bool
 	Uploads        int
 	LastGC         time.Time
+	Backups        bool      // backups configured
+	LastBackup     time.Time // last successful backup
 }
 
 // Registry holds the process metrics.
@@ -60,6 +62,7 @@ type Registry struct {
 	events   counterVec // action
 	gcRuns   counterVec // result
 	gcFreed  counterVec
+	backups  counterVec // result
 }
 
 // New creates a metrics registry. gauges is called on every scrape.
@@ -85,6 +88,18 @@ func (r *Registry) GCRun(bytesFreed int64, err error) {
 	}
 	r.gcRuns.add(label("result", result), 1)
 	r.gcFreed.add("", float64(bytesFreed))
+}
+
+// BackupRun records a finished backup.
+func (r *Registry) BackupRun(err error) {
+	if r == nil {
+		return
+	}
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	r.backups.add(label("result", result), 1)
 }
 
 func label(pairs ...string) string {
@@ -119,6 +134,15 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if g.DiskSupported {
 		write(bw, "rgstr_disk_total_bytes", "gauge", "Size of the storage filesystem.", map[string]float64{"": float64(g.DiskTotalBytes)})
 		write(bw, "rgstr_disk_free_bytes", "gauge", "Free space on the storage filesystem.", map[string]float64{"": float64(g.DiskFreeBytes)})
+	}
+	if g.Backups {
+		write(bw, "rgstr_backup_runs_total", "counter", "Backups by result.", r.backups.snapshot())
+		last := 0.0
+		if !g.LastBackup.IsZero() {
+			last = float64(g.LastBackup.Unix())
+		}
+		write(bw, "rgstr_backup_last_success_timestamp_seconds", "gauge", "Time of the last successful backup (0: none yet).",
+			map[string]float64{"": last})
 	}
 	if !g.LastGC.IsZero() {
 		write(bw, "rgstr_gc_last_run_timestamp_seconds", "gauge", "Start of the last garbage collection run.",

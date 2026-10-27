@@ -14,6 +14,7 @@
 - **Cross-repo mount** — мгновенное монтирование blob'а из другого репозитория без передачи данных (при наличии права pull на исходный репозиторий)
 - **Garbage collection** — периодическая очистка образов без тегов, их blob'ов и зависших сессий загрузки; не мешает идущему push
 - **Bearer token auth** — JWT (HS256) по Docker auth specification, Basic auth на токен-эндпоинте
+- **Бэкапы в S3 или директорию** — по расписанию, на работающем реестре, с ротацией и восстановлением одной командой
 - **LDAP, Active Directory и единый вход (OIDC)** — вход по паролю из каталога или через Keycloak, Authentik, Entra ID, Google; роли по группам
 - **Публичные и приватные репозитории** — гибкий контроль доступа через glob-паттерны, анонимный pull без авторизации
 - **Range downloads** — поддержка HTTP `Range` заголовка при скачивании слоёв
@@ -202,6 +203,7 @@ cp .env.example .env
 | `RGSTR_TRUSTED_PROXIES` | loopback и частные сети | Прокси, чьему `X-Forwarded-For` верить при записи IP клиента; `none` — не верить никому (см. [fail2ban](#fail2ban)) |
 | `RGSTR_PUBLIC_REPOS` | — | Паттерны публичных репозиториев (см. ниже) |
 | `RGSTR_METRICS_ENABLED` | `false` | Метрики Prometheus на `/metrics` (см. [Метрики](#метрики)) |
+| `RGSTR_BACKUP_*` | — | Бэкапы по расписанию в S3 или директорию (см. [Бэкапы](#бэкапы)) |
 | `RGSTR_LDAP_*` | — | Вход по паролю LDAP / Active Directory (см. [LDAP](#ldap-и-active-directory)) |
 | `RGSTR_OIDC_*` | — | Вход в веб-админку через OpenID Connect (см. [Единый вход](#единый-вход-oidc)) |
 | `RGSTR_GC_INTERVAL` | `1h` | Интервал запуска сборщика мусора |
@@ -590,6 +592,72 @@ RGSTR_OIDC_NAME=Keycloak
 RGSTR_OIDC_ADMIN_GROUPS=registry-admins
 ```
 
+## Бэкапы
+
+rgstr сам делает бэкапы по расписанию: в S3-совместимое хранилище (AWS S3,
+MinIO, Ceph, SeaweedFS, Yandex Object Storage, Cloudflare R2 …) или в
+директорию (смонтированная NFS-шара, второй диск).
+
+- **Что входит:** всё содержимое `RGSTR_STORAGE` — образы, пользователи,
+  проекты, роботы, политики, настройки и журнал. Незавершённые загрузки не входят.
+- **Без остановки.** Бэкап делается на работающем реестре и получается
+  целостным: файлы заменяются атомарно, а архив пишет сначала метаданные и
+  манифесты, потом blob'ы; сборка мусора на время бэкапа ждёт.
+- **Формат:** обычный tar `rgstr-backup-<UTC дата-время>.tar` (слои образов
+  уже сжаты, сжимать ещё раз нет смысла). В S3 он уходит multipart-загрузкой по
+  частям, ни память, ни диск не держат бэкап целиком.
+- **Ротация:** после удачного бэкапа старые сверх `RGSTR_BACKUP_KEEP` удаляются.
+- Бэкап, пропущенный, пока rgstr был остановлен, делается сразу после запуска.
+- Состояние — в админке на странице «Бэкапы» (там же «Сделать бэкап сейчас»),
+  время последнего удачного — в `/healthz` (`last_backup`) и в метрике
+  `rgstr_backup_last_success_timestamp_seconds`. Удобно для алерта.
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `RGSTR_BACKUP_TARGET` | — | `s3://бакет/префикс` или директория (`/backups`, `file:///backups`). Пусто — бэкапы выключены |
+| `RGSTR_BACKUP_SCHEDULE` | `0 3 * * *` | Расписание cron (минута час день месяц день-недели), UTC |
+| `RGSTR_BACKUP_KEEP` | `7` | Сколько бэкапов хранить |
+| `RGSTR_BACKUP_S3_ENDPOINT` | AWS для региона | Адрес хранилища, например `https://storage.yandexcloud.net`, `http://minio:9000` |
+| `RGSTR_BACKUP_S3_REGION` | `us-east-1` | Регион (`AWS_REGION`) |
+| `RGSTR_BACKUP_S3_ACCESS_KEY`, `RGSTR_BACKUP_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Ключи доступа; `AWS_SESSION_TOKEN` тоже учитывается |
+| `RGSTR_BACKUP_S3_PATH_STYLE` | `true` с `RGSTR_BACKUP_S3_ENDPOINT` | Адресация `https://host/бакет/ключ` (MinIO, Ceph); иначе `https://бакет.host/ключ` |
+
+Ключам нужны права на чтение, запись, удаление и список объектов в префиксе.
+Бакет создайте заранее. Если нужна неизменяемость копий, включите в хранилище
+версионирование или object lock: rgstr удаляет только старые копии своего
+префикса.
+
+```bash
+RGSTR_BACKUP_TARGET=s3://my-backups/rgstr
+RGSTR_BACKUP_S3_ENDPOINT=https://storage.yandexcloud.net
+RGSTR_BACKUP_S3_REGION=ru-central1
+RGSTR_BACKUP_S3_ACCESS_KEY=...
+RGSTR_BACKUP_S3_SECRET_KEY=...
+```
+
+### Восстановление
+
+Остановите rgstr и запустите `rgstr restore` с тем же окружением:
+
+```bash
+rgstr backups                      # список
+rgstr restore latest               # самый свежий — в пустой RGSTR_STORAGE
+rgstr restore rgstr-backup-20261027-030000.tar
+rgstr restore -force latest        # поверх данных: текущие уйдут в .before-restore-<время>/
+
+# Docker Compose
+docker compose stop rgstr
+docker compose run --rm rgstr restore -force latest
+docker compose start rgstr
+```
+
+Пока rgstr работает, `restore` откажется (данные заблокированы). При распаковке
+содержимое каждого blob'а сверяется с его digest: повреждённый архив не
+затронет текущие данные. После проверки удалите `.before-restore-*`.
+
+Для разового бэкапа остановленного реестра есть `rgstr backup`; у работающего —
+кнопка в админке или `POST /ui/api/backup/run` с токеном администратора.
+
 ## TLS
 
 Передайте пути к сертификату и ключу — сервер автоматически переключится на HTTPS:
@@ -837,6 +905,9 @@ https://registry.example.com/ui
 | `GET` | `/ui/api/disk` | Место на диске (администратор); `?data=1` — и размер данных реестра; `?details=1` — и оценка GC и список ожидающего |
 | `GET` | `/ui/api/gc` | Расписание GC и история запусков (администратор) |
 | `POST` | `/ui/api/gc/run` | `{"dry_run","ignore_grace"}` — запустить GC (администратор) |
+| `GET` | `/ui/api/backup` | Настройки, состояние и список бэкапов (администратор) |
+| `POST` | `/ui/api/backup/run` | Запустить бэкап сейчас, ответ `202` (администратор) |
+| `POST` | `/ui/api/cli-secret` | Новый CLI-секрет для docker login (пользователи LDAP и SSO) |
 | `GET` | `/ui/api/policies` | Правила хранения и неизменяемости, история применения (администратор) |
 | `POST` | `/ui/api/policies/retention` | `{"rules":[{"repos","tags","keep_last","keep_days","disabled"}]}` — заменить правила хранения |
 | `POST` | `/ui/api/policies/retention/run` | `{"dry_run"}` — применить правила хранения сейчас |

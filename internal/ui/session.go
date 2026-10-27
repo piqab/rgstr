@@ -14,7 +14,7 @@ type meResponse struct {
 	AuthEnabled  bool   `json:"auth_enabled"`
 	User         string `json:"user,omitempty"`
 	Admin        bool   `json:"admin"`
-	ProjectAdmin bool   `json:"project_admin"` // manages at least one project
+	ProjectAdmin bool   `json:"project_admin"`    // manages at least one project
 	Source       string `json:"source,omitempty"` // "ldap" or "oidc" for external users
 	SSO          string `json:"sso,omitempty"`    // OIDC sign-in button label; "" = off
 	LDAP         bool   `json:"ldap,omitempty"`   // LDAP passwords accepted

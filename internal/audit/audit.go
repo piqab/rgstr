@@ -34,6 +34,7 @@ const (
 	CLISecret      = "cli_secret"
 	GCRun          = "gc_run"
 	GCSettings     = "gc_settings"
+	BackupRun      = "backup_run"
 	RetentionRun   = "retention_run"
 	PolicyChange   = "policy_change"
 	ProjectCreate  = "project_create"

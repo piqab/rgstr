@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"rgstr/internal/auth"
+	"rgstr/internal/backup"
 	"rgstr/internal/maint"
 	"rgstr/internal/meta"
 	"rgstr/internal/ops"
@@ -30,6 +31,7 @@ type Deps struct {
 	Meta    *meta.Store
 	Maint   *maint.Runner
 	Hooks   *webhook.Notifier
+	Backup  *backup.Runner // nil: backups off
 }
 
 // Handler serves the web UI and its API.
@@ -41,11 +43,13 @@ type Handler struct {
 	meta    *meta.Store
 	maint   *maint.Runner
 	hooks   *webhook.Notifier
+	backup  *backup.Runner
 }
 
 // New creates a UI handler.
 func New(d Deps) *Handler {
-	return &Handler{auth: d.Auth, store: d.Store, counter: d.Counter, ops: d.Ops, meta: d.Meta, maint: d.Maint, hooks: d.Hooks}
+	return &Handler{auth: d.Auth, store: d.Store, counter: d.Counter, ops: d.Ops, meta: d.Meta, maint: d.Maint,
+		hooks: d.Hooks, backup: d.Backup}
 }
 
 // Mount registers the UI handlers on mux.
@@ -78,6 +82,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/api/gc", h.handleGC)
 	mux.HandleFunc("/ui/api/gc/run", h.handleGCRun)
 	mux.HandleFunc("/ui/api/gc/settings", h.handleGCSettings)
+	mux.HandleFunc("/ui/api/backup", h.handleBackup)
+	mux.HandleFunc("/ui/api/backup/run", h.handleBackupRun)
 
 	mux.HandleFunc("/ui/api/policies", h.handlePolicies)
 	mux.HandleFunc("/ui/api/policies/retention", h.handleRetentionRules)

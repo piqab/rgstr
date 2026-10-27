@@ -20,6 +20,9 @@ import (
 var version = "dev"
 
 func main() {
+	if ok, code := runCommand(os.Args[1:]); ok {
+		os.Exit(code)
+	}
 	cfg := config.Load()
 	cfg.Version = displayVersion(version)
 

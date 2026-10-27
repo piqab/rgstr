@@ -23,6 +23,7 @@ import (
 
 	"rgstr/internal/audit"
 	"rgstr/internal/auth"
+	"rgstr/internal/backup"
 	"rgstr/internal/config"
 	"rgstr/internal/maint"
 	"rgstr/internal/meta"
@@ -64,6 +65,7 @@ type Registry struct {
 	maint       *maint.Runner
 	hooks       *webhook.Notifier
 	metrics     *metrics.Registry // nil unless RGSTR_METRICS_ENABLED
+	backup      *backup.Runner    // nil unless RGSTR_BACKUP_TARGET
 
 	sizeMu sync.Mutex
 	size   int64
@@ -112,6 +114,22 @@ func New(store *storage.Filesystem, tokenSvc *auth.TokenService, cfg *config.Con
 		alog.OnAdd(r.metrics.Event)
 		r.maint.OnGC = r.metrics.GCRun
 	}
+	if r.backup, err = backup.New(cfg.Backup, cfg.StorageRoot, cfg.Version); err != nil {
+		log.Fatalf("backup: %v", err)
+	}
+	if r.backup != nil {
+		r.backup.Hold = r.maint.Hold
+		r.backup.OnRun = func(obj backup.Object, user string, err error) {
+			r.metrics.BackupRun(err)
+			detail := obj.Name
+			if err == nil {
+				detail = fmt.Sprintf("%s, %d bytes", obj.Name, obj.Size)
+			}
+			if user == "" { // manual runs are recorded by the web admin
+				o.Audit(ops.System, audit.BackupRun, r.backup.Target().String(), detail, err)
+			}
+		}
+	}
 	return r
 }
 
@@ -129,7 +147,14 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": reg.cfg.Version})
+		resp := map[string]string{"status": "ok", "version": reg.cfg.Version}
+		if reg.backup != nil {
+			// When the last backup succeeded, for monitoring and the operator.
+			if st := reg.backup.Status(); st.LastSuccess != nil {
+				resp["last_backup"] = st.LastSuccess.Format(time.RFC3339)
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
 	})
 
 	mux.HandleFunc("/stats", reg.handleStats)
@@ -145,12 +170,16 @@ func (reg *Registry) Mount(mux *http.ServeMux) {
 		Meta:    reg.meta,
 		Maint:   reg.maint,
 		Hooks:   reg.hooks,
+		Backup:  reg.backup,
 	}).Mount(mux)
 }
 
 // Start launches background maintenance (scheduled GC) until ctx ends.
 func (reg *Registry) Start(ctx context.Context) {
 	reg.maint.Start(ctx)
+	if reg.backup != nil {
+		reg.backup.Start(ctx)
+	}
 }
 
 // dispatch is the central router.
@@ -832,6 +861,12 @@ func (reg *Registry) gauges() metrics.Gauges {
 	}
 	if h := reg.maint.History(); len(h) > 0 {
 		g.LastGC = h[0].Start
+	}
+	if reg.backup != nil {
+		g.Backups = true
+		if st := reg.backup.Status(); st.LastSuccess != nil {
+			g.LastBackup = *st.LastSuccess
+		}
 	}
 	return g
 }

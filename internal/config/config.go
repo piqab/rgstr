@@ -69,6 +69,30 @@ type Config struct {
 
 	LDAP LDAPConfig
 	OIDC OIDCConfig
+
+	Backup BackupConfig
+}
+
+// BackupConfig schedules backups of the storage root (RGSTR_BACKUP_*).
+type BackupConfig struct {
+	// Target is "s3://bucket/prefix" or a directory ("/backups",
+	// "file:///backups"). Empty: backups off.
+	Target   string
+	Schedule string // cron, UTC
+	Keep     int
+	S3       S3Config
+}
+
+// S3Config addresses an S3-compatible object store.
+type S3Config struct {
+	Endpoint     string // default: AWS for Region
+	Region       string
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
+	// PathStyle uses https://endpoint/bucket/key; default for a custom
+	// Endpoint (MinIO, Ceph). Virtual-hosted style otherwise.
+	PathStyle bool
 }
 
 // GroupRoles maps directory groups to rgstr roles for external users (LDAP,
@@ -175,7 +199,28 @@ func Load() *Config {
 			Name:          env("RGSTR_OIDC_NAME", "SSO"),
 			Roles:         groupRoles("RGSTR_OIDC_"),
 		},
+
+		Backup: BackupConfig{
+			Target:   env("RGSTR_BACKUP_TARGET", ""),
+			Schedule: env("RGSTR_BACKUP_SCHEDULE", "0 3 * * *"),
+			Keep:     envInt("RGSTR_BACKUP_KEEP", 7),
+			S3: S3Config{
+				Endpoint:     strings.TrimSuffix(env("RGSTR_BACKUP_S3_ENDPOINT", ""), "/"),
+				Region:       env("RGSTR_BACKUP_S3_REGION", env("AWS_REGION", "us-east-1")),
+				AccessKey:    env("RGSTR_BACKUP_S3_ACCESS_KEY", os.Getenv("AWS_ACCESS_KEY_ID")),
+				SecretKey:    env("RGSTR_BACKUP_S3_SECRET_KEY", os.Getenv("AWS_SECRET_ACCESS_KEY")),
+				SessionToken: os.Getenv("AWS_SESSION_TOKEN"),
+				PathStyle:    envBool("RGSTR_BACKUP_S3_PATH_STYLE", os.Getenv("RGSTR_BACKUP_S3_ENDPOINT") != ""),
+			},
+		},
 	}
+}
+
+func envInt(key string, def int) int {
+	if n, err := strconv.Atoi(os.Getenv(key)); err == nil {
+		return n
+	}
+	return def
 }
 
 func groupRoles(prefix string) GroupRoles {
