@@ -24,7 +24,7 @@ RUN V="$VERSION"; if [ "$V" = dev ] && [ -f VERSION ]; then V="v$(cat VERSION)";
 # ── Trivy ─────────────────────────────────────────────────────────────────────
 # The vulnerability scanner (RGSTR_SCAN_ENABLED=true); its database is
 # downloaded on the first scan.
-FROM ghcr.io/aquasecurity/trivy:0.76.1 AS trivy
+FROM ghcr.io/aquasecurity/trivy:0.76.2 AS trivy
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # Use alpine (not scratch) so the health check can use wget.
